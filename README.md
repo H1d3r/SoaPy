@@ -5,7 +5,9 @@ SOAPy includes previously undeveloped custom python implementations of a collect
 
 SOAPy started as a [research project at IBM X-Force Red with Jackson Leverett](https://www.ibm.com/think/x-force/stealthy-enumeration-of-active-directory-environments-through-adws) to rewrite the proprietary Microsoft .NET mechanisms/library that [FalconForce’s SOAPHound](https://falconforce.nl/soaphound-tool-to-collect-active-directory-data-via-adws/) uses to interact with ADWS, so recon and post-exploitation operations would be possible through a SOCKS5 proxy from Linux on Red Team assessments. After joining [SpecterOps](https://specterops.io), I decided to continue development on the project to bring it up to operational speed. 
 
-SOAPy is used for interacting with ADWS over a proxy for stealthy recon into an internal Active Directory environment. SOAPy can also perform targeted post-exploitation operations on LDAP, useful in many assessments when evasive LDAP write operations are required.
+SOAPy is used for interacting with ADWS over a proxy for stealthy recon into an internal Active Directory environment. SOAPy is intended to be used as an ADWS ingestor for Active Directory, then the resultant data can be transformed to [BloodHound](https://specterops.io/bloodhound-community-edition/) compatible JSON using [Matt Creel’s BOFHound project](https://github.com/coffeegist/bofhound). The JSON transformed from BOFHound can then be uploaded into BloodHound for post-processing and visualization of attack paths.
+
+SOAPy can also perform targeted post-exploitation operations in Active Directory, useful in many assessments when evasive LDAP write operations are required.
 
 This includes the following tradecraft:
 
