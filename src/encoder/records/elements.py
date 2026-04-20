@@ -1,5 +1,5 @@
 import struct
-from typing import Self
+from typing_extensions import Self
 
 from .constants import DICTIONARY
 from .datatypes import MultiByteInt31, Utf8String
