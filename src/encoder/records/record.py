@@ -1,6 +1,6 @@
 import struct
 
-from typing import Self, Type
+from typing_extensions import Self, Type
 
 import logging as log
 

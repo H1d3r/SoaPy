@@ -620,6 +620,7 @@ def run_cli():
 ███████║╚██████╔╝██║  ██║██║        ██║   
 ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝        ╚═╝  
 
+v1.0.0
 @_logangoins
 github.com/jlevere
 """)
@@ -639,12 +640,12 @@ github.com/jlevere
         help="Turn DEBUG output ON"
     )
     parser.add_argument(
-        "--ts",
+        "-ts",
         action="store_true",
         help="Adds timestamp to every logging output."
     )
     parser.add_argument(
-        "-H", "--hash",
+        "-nt", "--nthash",
         action="store",
         metavar="nthash",
         help="Use an NT hash for authentication",
@@ -709,7 +710,7 @@ github.com/jlevere
         domain = ""
 
     # Ask for password if missing and username present
-    if password == "" and username != "" and options.hash is None:
+    if password == "" and username != "" and options.nthash is None:
         from getpass import getpass
         password = getpass("Password:")
 
@@ -739,7 +740,7 @@ github.com/jlevere
         logging.critical('"username" must be specified')
         raise SystemExit()
 
-    auth = NTLMAuth(password=password, hashes=options.hash)
+    auth = NTLMAuth(password=password, hashes=options.nthash)
 
     # -----------------------
     # Writing operations

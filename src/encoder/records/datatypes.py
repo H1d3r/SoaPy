@@ -1,7 +1,7 @@
 import logging
 import struct
 
-from typing import Self
+from typing_extensions import Self
 
 log = logging.getLogger(__name__)
 
