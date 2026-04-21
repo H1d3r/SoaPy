@@ -564,7 +564,7 @@ github.com/jlevere
 
     parser = argparse.ArgumentParser(
         add_help=True,
-        description="Perform AD reconnaissance and post-exploitation through ADWS from Linux",
+        description="Perform AD reconnaissance and post-exploitation through ADWS over SOCKS5",
     )
     parser.add_argument(
         "connection",
