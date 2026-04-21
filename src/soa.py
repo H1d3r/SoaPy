@@ -622,23 +622,20 @@ github.com/jlevere
     writing.add_argument("--disable-account", action="store", metavar="MACHINE", help="Disable a computer account")
 
     # Shadow Credentials options
-    shadow = parser.add_argument_group('Shadow Credentials (msDS-KeyCredentialLink)')
-    shadow.add_argument("--shadow-creds", action="store", metavar="ACTION",
+    writing.add_argument("--shadow-creds", action="store", metavar="ACTION",
                        choices=['list', 'add', 'remove', 'clear', 'info'],
                        help="Shadow Credentials action: list, add, remove, clear, info")
-    shadow.add_argument("--shadow-target", action="store", metavar="TARGET",
+    writing.add_argument("--shadow-target", action="store", metavar="TARGET",
                        help="Target account for Shadow Credentials operation")
-    shadow.add_argument("--device-id", action="store", metavar="ID",
+    writing.add_argument("--device-id", action="store", metavar="ID",
                        help="Device ID for remove/info actions")
-    shadow.add_argument("--cert-filename", action="store", metavar="NAME",
+    writing.add_argument("--cert-filename", action="store", metavar="NAME",
                        help="Filename for certificate export (add action)")
-    shadow.add_argument("--cert-export", action="store", metavar="TYPE",
+    writing.add_argument("--cert-export", action="store", metavar="TYPE",
                        choices=['PEM', 'PFX'], default='PFX',
                        help="Export type: PEM or PFX (default: PFX)")
-    shadow.add_argument("--cert-password", action="store", metavar="PASS",
+    writing.add_argument("--cert-password", action="store", metavar="PASS",
                        help="Password for PFX file (random if not set)")
-    shadow.add_argument("--shadow-creds-help", action="store_true",
-                       help="Display detailed Shadow Credentials help and examples")
 
     # DNS management options
     writing.add_argument("--dns-add", action="store", metavar="FQDN", help="Add A record (FQDN). Requires --dns-ip")
@@ -651,11 +648,6 @@ github.com/jlevere
     writing.add_argument("--allow-multiple", action="store_true", help="Allow multiple A records when adding")
     writing.add_argument("--ttl", type=int, default=180, help="TTL for new A record (default 180)")
     writing.add_argument("--tcp", action="store_true", help="Use DNS over TCP when fetching SOA serial")
-
-    # Handle --shadow-creds-help before full argument parsing
-    if "--shadow-creds-help" in sys.argv:
-        print_shadow_creds_help()
-        sys.exit(0)
 
     if len(sys.argv) == 1:
         parser.print_help()
