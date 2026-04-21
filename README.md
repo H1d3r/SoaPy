@@ -20,7 +20,6 @@ This includes the following tradecraft:
 The protocol structure for interacting with ADWS is shown below:
 <img width="1376" height="768" alt="ADWS Protocol Diagram" src="https://github.com/user-attachments/assets/78442899-2e6c-4f72-97c4-ef0d68cf0b3b" />
 
-
 The blog detailing the original research largely from an engineering perspective can be found here:
 
 [SOAPy: Stealthy enumeration of Active Directory environments through ADWS - IBM X-Force Red](https://www.ibm.com/think/x-force/stealthy-enumeration-of-active-directory-environments-through-adws)
