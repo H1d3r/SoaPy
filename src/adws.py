@@ -321,8 +321,220 @@ class ADWSConnect:
 
         return nmf
 
+    def _format_selection_properties(
+        self,
+        attributes: list | None,
+        range_hints: dict[str, tuple[int, int | str | None]] | None = None,
+    ) -> str:
+        """Format ad:SelectionProperty elements, including optional range retrieval."""
+
+        if attributes is None:
+            return ""
+
+        selection_properties = []
+        for attr in attributes:
+            range_attrs = ""
+            if range_hints and attr in range_hints:
+                range_low, range_high = range_hints[attr]
+                range_attrs = f' RangeLow="{range_low}"'
+                if range_high is not None:
+                    range_attrs += f' RangeHigh="{range_high}"'
+
+            selection_properties.append(
+                f"<ad:SelectionProperty{range_attrs}>addata:{attr}</ad:SelectionProperty>"
+            )
+
+        return "\n".join(selection_properties) + ("\n" if selection_properties else "")
+
+    def _iter_response_objects(self, et: ElementTree.Element) -> list[ElementTree.Element]:
+        return et.findall(".//ad:value/../..", namespaces=NAMESPACES)
+
+    def _get_object_identity(self, item: ElementTree.Element) -> str | None:
+        object_ref = item.find("./ad:objectReferenceProperty/ad:value", namespaces=NAMESPACES)
+        if object_ref is not None and object_ref.text:
+            return object_ref.text
+
+        distinguished_name = item.find("./addata:distinguishedName/ad:value", namespaces=NAMESPACES)
+        if distinguished_name is not None and distinguished_name.text:
+            return distinguished_name.text
+
+        return None
+
+    def _get_object_distinguished_name(self, item: ElementTree.Element) -> str | None:
+        distinguished_name = item.find("./addata:distinguishedName/ad:value", namespaces=NAMESPACES)
+        if distinguished_name is not None and distinguished_name.text:
+            return distinguished_name.text
+        return None
+
+    def _find_attribute_element(
+        self, item: ElementTree.Element, attr: str
+    ) -> ElementTree.Element | None:
+        return item.find(f"./addata:{attr}", namespaces=NAMESPACES)
+
+    def _reverse_attribute_values(self, attr_elem: ElementTree.Element) -> None:
+        values = attr_elem.findall("./ad:value", namespaces=NAMESPACES)
+        if len(values) < 2:
+            return
+
+        for value in values:
+            attr_elem.remove(value)
+
+        for value in reversed(values):
+            attr_elem.append(value)
+
+    def _extract_ranged_attributes_for_item(
+        self, item: ElementTree.Element
+    ) -> dict[str, tuple[int, int]]:
+        ranged_attributes: dict[str, tuple[int, int]] = {}
+
+        for part in list(item):
+            if "RangeLow" not in part.attrib or "RangeHigh" not in part.attrib:
+                continue
+
+            attr_name = self._get_tag_name(part)
+            try:
+                range_low = int(part.attrib["RangeLow"])
+                range_high = int(part.attrib["RangeHigh"])
+            except (KeyError, ValueError):
+                continue
+
+            ranged_attributes[attr_name] = (range_low, range_high)
+
+        return ranged_attributes
+
+    def _merge_attribute_values(
+        self,
+        base_results: ElementTree.Element,
+        ranged_results: ElementTree.Element,
+        attr: str,
+    ) -> int:
+        merged_values = 0
+        base_objects = {
+            object_id: item
+            for item in self._iter_response_objects(base_results)
+            if (object_id := self._get_object_identity(item)) is not None
+        }
+
+        for ranged_item in self._iter_response_objects(ranged_results):
+            object_id = self._get_object_identity(ranged_item)
+            if object_id is None or object_id not in base_objects:
+                continue
+
+            ranged_attr = self._find_attribute_element(ranged_item, attr)
+            if ranged_attr is None:
+                continue
+
+            base_item = base_objects[object_id]
+            base_attr = self._find_attribute_element(base_item, attr)
+            if base_attr is None:
+                self._reverse_attribute_values(ranged_attr)
+                base_item.append(ranged_attr)
+                value_count = len(ranged_attr.findall("./ad:value", namespaces=NAMESPACES))
+                ranged_attr.attrib["RangeLow"] = "0"
+                ranged_attr.attrib["RangeHigh"] = str(value_count - 1) if value_count else "0"
+                merged_values += len(ranged_attr.findall("./ad:value", namespaces=NAMESPACES))
+                continue
+
+            self._reverse_attribute_values(base_attr)
+            self._reverse_attribute_values(ranged_attr)
+
+            existing_low = int(base_attr.attrib.get("RangeLow", "0"))
+
+            existing_high_value = base_attr.attrib.get(
+                "RangeHigh",
+                str(len(base_attr.findall("./ad:value", namespaces=NAMESPACES)) - 1),
+            )
+            if existing_high_value == "*":
+                existing_high = len(base_attr.findall("./ad:value", namespaces=NAMESPACES)) - 1
+            else:
+                existing_high = int(existing_high_value)
+
+            incoming_low = int(ranged_attr.attrib.get("RangeLow", str(existing_high + 1)))
+            incoming_high_value = ranged_attr.attrib.get(
+                "RangeHigh",
+                str(
+                    incoming_low
+                    + len(ranged_attr.findall("./ad:value", namespaces=NAMESPACES))
+                    - 1
+                ),
+            )
+            if incoming_high_value == "*":
+                incoming_high = incoming_low + len(
+                    ranged_attr.findall("./ad:value", namespaces=NAMESPACES)
+                ) - 1
+            else:
+                incoming_high = int(incoming_high_value)
+
+            for value in ranged_attr.findall("./ad:value", namespaces=NAMESPACES):
+                base_attr.append(value)
+                merged_values += 1
+
+            base_attr.attrib["RangeLow"] = str(min(existing_low, incoming_low))
+            base_attr.attrib["RangeHigh"] = str(max(existing_high, incoming_high))
+
+        return merged_values
+
+    def _expand_ranged_attributes(
+        self,
+        remoteName: str,
+        query: str,
+        basedn: str | None,
+        results: ElementTree.Element,
+    ) -> None:
+        for item in self._iter_response_objects(results):
+            object_dn = self._get_object_distinguished_name(item)
+            if object_dn is None:
+                continue
+
+            ranged_attributes = self._extract_ranged_attributes_for_item(item)
+            for attr, (range_low, range_high) in ranged_attributes.items():
+                next_low = range_high + 1
+
+                while True:
+                    enum_ctx = self._query_enumeration(
+                        remoteName=remoteName,
+                        nmf=self._nmf,
+                        query="(objectClass=*)",
+                        basedn=object_dn,
+                        attributes=[attr],
+                        range_hints={attr: (next_low, "*")},
+                    )
+                    if enum_ctx is None:
+                        break
+
+                    ranged_page = ElementTree.Element("wsen:Items")
+                    more_results = True
+                    while more_results:
+                        et, more_results = self._pull_results(
+                            remoteName=remoteName, nmf=self._nmf, enum_ctx=enum_ctx
+                        )
+                        for page_item in et.findall(".//wsen:Items", namespaces=NAMESPACES):
+                            ranged_page.append(page_item)
+
+                    merged_values = self._merge_attribute_values(results, ranged_page, attr)
+                    if merged_values == 0:
+                        break
+
+                    ranged_objects = self._iter_response_objects(ranged_page)
+                    if not ranged_objects:
+                        break
+
+                    next_ranges = self._extract_ranged_attributes_for_item(ranged_objects[0])
+                    next_range = next_ranges.get(attr)
+                    if next_range is None:
+                        break
+
+                    _, returned_high = next_range
+                    next_low = returned_high + 1
+
     def _query_enumeration(
-        self, remoteName: str, nmf: ms_nmf.NMFConnection, query: str, basedn: str, attributes: list
+        self,
+        remoteName: str,
+        nmf: ms_nmf.NMFConnection,
+        query: str,
+        basedn: str,
+        attributes: list,
+        range_hints: dict[str, tuple[int, int | str | None]] | None = None,
     ) -> str | None:
         """Send the query and set up an enumeration context for the results
 
@@ -336,15 +548,7 @@ class ADWSConnect:
         Returns:
             str or None: the enumeration context, or None in error
         """
-        fAttributes: str = ""
-        """Format passed attributes"""
-        if attributes is not None:
-            for attr in attributes:
-                fAttributes += (
-                    "<ad:SelectionProperty>addata:{attr}</ad:SelectionProperty>\n".format(
-                        attr=attr
-                    )
-                )
+        fAttributes = self._format_selection_properties(attributes, range_hints)
 
         if basedn is None:
             basedn = ",".join([f"DC={i}" for i in self._domain.split(".")])
@@ -751,8 +955,15 @@ class ADWSConnect:
             for item in et.findall(".//wsen:Items", namespaces=NAMESPACES):
                 results.append(item)
 
-            if print_incrementally:
-                self._pretty_print_response(et, parse_values=parse_values)
+        self._expand_ranged_attributes(
+            remoteName=self._fqdn,
+            query=query,
+            basedn=basedn,
+            results=results,
+        )
+
+        if print_incrementally:
+            self._pretty_print_response(results, parse_values=parse_values)
 
         return results
 

@@ -2,7 +2,7 @@ import base64
 import datetime
 import struct
 from html.entities import codepoint2name
-from typing import Self
+from typing_extensions import Self
 
 from .constants import DICTIONARY
 from .datatypes import Decimal, MultiByteInt31

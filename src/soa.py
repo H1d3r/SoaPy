@@ -557,6 +557,7 @@ def run_cli():
 ███████║╚██████╔╝██║  ██║██║        ██║   
 ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝        ╚═╝  
 
+v1.0.0
 @_logangoins
 github.com/jlevere
 """)
@@ -572,9 +573,22 @@ github.com/jlevere
         default=None,
         help="domain/username[:password]@<targetName or address>",
     )
-    parser.add_argument("--debug", action="store_true", help="Turn DEBUG output ON")
-    parser.add_argument("--ts", action="store_true", help="Adds timestamp to every logging output.")
-    parser.add_argument("-H", "--hash", action="store", metavar="nthash", help="Use an NT hash for authentication")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Turn DEBUG output ON"
+    )
+    parser.add_argument(
+        "-ts",
+        action="store_true",
+        help="Adds timestamp to every logging output."
+    )
+    parser.add_argument(
+        "-nt", "--nthash",
+        action="store",
+        metavar="nthash",
+        help="Use an NT hash for authentication",
+    )
 
     # Enumeration options
     enum = parser.add_argument_group('Enumeration')
@@ -665,7 +679,8 @@ github.com/jlevere
     if domain is None:
         domain = ""
 
-    if password == "" and username != "" and options.hash is None:
+    # Ask for password if missing and username present
+    if password == "" and username != "" and options.nthash is None:
         from getpass import getpass
         password = getpass("Password:")
 
@@ -695,7 +710,7 @@ github.com/jlevere
         logging.critical('"username" must be specified')
         raise SystemExit()
 
-    auth = NTLMAuth(password=password, hashes=options.hash)
+    auth = NTLMAuth(password=password, hashes=options.nthash)
 
     try:
         # -----------------------

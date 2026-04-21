@@ -4,6 +4,7 @@ from hypothesis import given
 from hypothesis.strategies import integers, text, binary
 
 from src.ms_nmf import (
+    NMFConnection,
     NMFRecord,
     NMFVersion,
     NMFMode,
@@ -18,6 +19,18 @@ from src.ms_nmf import (
     NMFPreambleAck,
     NMFPreamble,
     ) 
+
+
+class DummyTransport:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self._sock = object()
+
+    def recv(self, _: int = 0) -> bytes:
+        return self._chunks.pop(0) if self._chunks else b""
+
+    def sendall(self, _: bytes) -> None:
+        return None
 
 
 class TestSizeEncoding(unittest.TestCase):
@@ -164,3 +177,22 @@ class TestRecords(unittest.TestCase):
         expected += NMFKnownEncoding(encoding).getData()
         self.assertEqual(data, expected)
 
+    def test_recv_buffers_fragmented_records(self):
+        payload = b"<xml>" * 2000
+        envelope = NMFSizedEnvelope(payload).getData()
+        end_record = NMFEnd().getData()
+        transport = DummyTransport(
+            [
+                envelope[:11],
+                envelope[11:257],
+                envelope[257:] + end_record,
+            ]
+        )
+        conn = NMFConnection(transport, fqdn="dc.example.com")
+        conn._transport = transport
+
+        pkt = conn._recv()
+        self.assertEqual(pkt["payload"], payload)
+
+        pkt = conn._recv()
+        self.assertEqual(pkt["record_type"], 0x7)
