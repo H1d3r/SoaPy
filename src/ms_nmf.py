@@ -500,7 +500,9 @@ class NMFConnection:
         self._throw_if_not(NMFUpgradeResponse, self._recv())
 
         # nns auth
-        self._nns.auth_ntlm()
+        self._nns.auth()
+
+        self._recv_buffer = b""
 
         # switch to upgraded transport now
         self._transport = self._nns

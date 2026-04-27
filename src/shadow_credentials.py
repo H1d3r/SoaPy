@@ -48,7 +48,7 @@ except ImportError:
     CRYPTOGRAPHY_AVAILABLE = False
 
 
-from src.adws import ADWSConnect, NTLMAuth
+from src.adws import ADWSAuthType, ADWSConnect
 from src.soap_templates import NAMESPACES
 
 
@@ -212,7 +212,7 @@ class ShadowCredentialsADWS:
         ip: str,
         domain: str,
         username: str,
-        auth: NTLMAuth,
+        auth: ADWSAuthType,
         target_samname: str,
     ):
         """
@@ -222,7 +222,7 @@ class ShadowCredentialsADWS:
             ip: IP address of the domain controller
             domain: Domain name (FQDN)
             username: Username for authentication
-            auth: NTLMAuth object with credentials
+            auth: ADWSAuthType object with credentials
             target_samname: SAM account name of the target object
         """
         check_dependencies()
@@ -568,7 +568,7 @@ def shadow_credentials_list(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
 ):
     """List KeyCredentials for a target account."""
     sc = ShadowCredentialsADWS(ip, domain, username, auth, target)
@@ -580,7 +580,7 @@ def shadow_credentials_add(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     filename: Optional[str] = None,
     export_type: str = "PFX",
     pfx_password: Optional[str] = None,
@@ -596,7 +596,7 @@ def shadow_credentials_remove(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
 ):
     """Remove a specific KeyCredential from a target account."""
     sc = ShadowCredentialsADWS(ip, domain, username, auth, target)
@@ -608,7 +608,7 @@ def shadow_credentials_clear(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
 ):
     """Clear all KeyCredentials from a target account."""
     sc = ShadowCredentialsADWS(ip, domain, username, auth, target)
@@ -621,7 +621,7 @@ def shadow_credentials_info(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
 ):
     """Show info about a specific KeyCredential."""
     sc = ShadowCredentialsADWS(ip, domain, username, auth, target)

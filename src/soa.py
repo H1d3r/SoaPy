@@ -39,7 +39,7 @@ from impacket.ldap.ldaptypes import (
     SR_SECURITY_DESCRIPTOR,
 )
 
-from src.adws import ADWSConnect, NTLMAuth
+from src.adws import ADWSAuthType, ADWSConnect, KerberosAuth, NTLMAuth
 from src.soap_templates import NAMESPACES, LDAP_CREATE_FOR_RESOURCEFACTORY, LDAP_DELETE_FOR_RESOURCE, LDAP_PUT_FSTRING
 
 # DNS ADWS helpers
@@ -103,7 +103,7 @@ def _create_allow_ace(sid: LDAP_SID):
     return nace
 
 
-def getAccountDN(target: str, username: str, ip: str, domain: str, auth: NTLMAuth):
+def getAccountDN(target: str, username: str, ip: str, domain: str, auth: ADWSAuthType):
     """Get the distinguishedName of a user or computer in AD using ADWS Pull"""
     get_account_query = f"(samAccountName={target})"
     pull_client = ADWSConnect.pull_client(ip, domain, username, auth)
@@ -138,7 +138,7 @@ def delete_computer(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth
+    auth: ADWSAuthType
 ) -> bool:
     """Delete an AD computer object using ADWS WS-Transfer Delete."""
     print(f"[*] Attempting to delete computer: {machine_name}")
@@ -217,7 +217,7 @@ def add_computer(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     remove: bool = False,
     computer_pass: str = None,
     spn_list: list = None,
@@ -326,7 +326,7 @@ def set_spn(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     remove: bool = False,
 ):
     """Set a value in servicePrincipalName."""
@@ -350,7 +350,7 @@ def set_asrep(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     remove: bool = False,
 ):
     """Set or clear the DONT_REQ_PREAUTH flag on userAccountControl."""
@@ -394,7 +394,7 @@ def set_rbcd(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     remove: bool = False,
 ):
     """Write or remove RBCD (msDS-AllowedToActOnBehalfOfOtherIdentity)."""
@@ -471,7 +471,7 @@ def disable_machine_account(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth
+    auth: ADWSAuthType
 ) -> bool:
     """Disable a computer account."""
     print(f"[*] Attempting to disable computer: {machine_name}")
@@ -589,6 +589,12 @@ github.com/jlevere
         metavar="nthash",
         help="Use an NT hash for authentication",
     )
+    parser.add_argument(
+        "-k",
+        "--kerberos",
+        action="store_true",
+        help="Use Kerberos authentication from the KRB5CCNAME ccache",
+    )
 
     # Enumeration options
     enum = parser.add_argument_group('Enumeration')
@@ -655,6 +661,9 @@ github.com/jlevere
 
     options = parser.parse_args()
 
+    if options.kerberos and options.nthash:
+        parser.error("-k/--kerberos cannot be used with -nt/--nthash")
+
     # Check if connection is required
     if options.connection is None:
         parser.print_help()
@@ -671,8 +680,17 @@ github.com/jlevere
     if domain is None:
         domain = ""
 
+    if options.kerberos and (not domain or not username):
+        from impacket.krb5.ccache import CCache
+
+        domain, username, _, _ = CCache.parseFile(
+            domain=domain,
+            username=username,
+            target=f"LDAP/{remoteName}",
+        )
+
     # Ask for password if missing and username present
-    if password == "" and username != "" and options.nthash is None:
+    if password == "" and username != "" and options.nthash is None and not options.kerberos:
         from getpass import getpass
         password = getpass("Password:")
 
@@ -702,7 +720,7 @@ github.com/jlevere
         logging.critical('"username" must be specified')
         raise SystemExit()
 
-    auth = NTLMAuth(password=password, hashes=options.nthash)
+    auth = KerberosAuth() if options.kerberos else NTLMAuth(password=password, hashes=options.nthash)
 
     try:
         # -----------------------

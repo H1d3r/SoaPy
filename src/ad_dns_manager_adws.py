@@ -28,7 +28,7 @@ from typing import Tuple, List, Dict, Optional
 import dns.resolver
 from impacket.structure import Structure
 
-from src.adws import ADWSConnect, NTLMAuth
+from src.adws import ADWSAuthType, ADWSConnect
 # SOAP/XML templates and namespaces moved to src.soap_templates to keep this file lean.
 from src.soap_templates import (
     NAMESPACES,
@@ -285,7 +285,7 @@ def find_dns_node(
     ip: str,
     domain: str,
     username: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     forest: bool = False,
     legacy: bool = False,
     pull_client: Optional[ADWSConnect] = None,
@@ -470,7 +470,7 @@ def add_dns_record_adws(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     allow_multiple: bool = False,
     ttl: int = 180,
     tcp: bool = False,
@@ -691,7 +691,7 @@ def modify_dns_record_adws(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     ttl: int = 180,
     tcp: bool = False,
     forest: bool = False,
@@ -753,7 +753,7 @@ def remove_dns_record_adws(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     tcp: bool = False,
     forest: bool = False,
     legacy: bool = False,
@@ -869,7 +869,7 @@ def tombstone_dns_record_adws(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     tcp: bool = False,
     forest: bool = False,
     legacy: bool = False,
@@ -930,7 +930,7 @@ def resurrect_dns_record_adws(
     username: str,
     ip: str,
     domain: str,
-    auth: NTLMAuth,
+    auth: ADWSAuthType,
     tcp: bool = False,
     forest: bool = False,
     legacy: bool = False,
