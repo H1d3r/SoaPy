@@ -1,9 +1,11 @@
 import struct
+from xml.sax.saxutils import quoteattr
+
 from typing_extensions import Self
 
-from .datatypes import MultiByteInt31, Utf8String
 from .constants import DICTIONARY
-from .record import record, Attribute
+from .datatypes import MultiByteInt31, Utf8String
+from .record import Attribute, record
 
 
 class ShortAttributeRecord(Attribute):
@@ -25,7 +27,7 @@ class ShortAttributeRecord(Attribute):
         return bytes
 
     def __str__(self):
-        return '%s="%s"' % (self.name, str(self.value))
+        return "%s=%s" % (self.name, quoteattr(str(self.value)))
 
     @classmethod
     def parse(cls, fp) -> Self:
@@ -57,7 +59,7 @@ class AttributeRecord(Attribute):
         return bytes
 
     def __str__(self):
-        return '%s:%s="%s"' % (self.prefix, self.name, str(self.value))
+        return "%s:%s=%s" % (self.prefix, self.name, quoteattr(str(self.value)))
 
     @classmethod
     def parse(cls, fp) -> Self:
@@ -88,7 +90,7 @@ class ShortDictionaryAttributeRecord(Attribute):
         return bytes
 
     def __str__(self):
-        return '%s="%s"' % (DICTIONARY[self.index], str(self.value))
+        return "%s=%s" % (DICTIONARY[self.index], quoteattr(str(self.value)))
 
     @classmethod
     def parse(cls, fp) -> Self:
@@ -120,7 +122,11 @@ class DictionaryAttributeRecord(Attribute):
         return bytes
 
     def __str__(self):
-        return '%s:%s="%s"' % (self.prefix, DICTIONARY[self.index], str(self.value))
+        return "%s:%s=%s" % (
+            self.prefix,
+            DICTIONARY[self.index],
+            quoteattr(str(self.value)),
+        )
 
     @classmethod
     def parse(cls, fp) -> Self:
@@ -139,7 +145,7 @@ class ShortDictionaryXmlnsAttributeRecord(Attribute):
         self.index = index
 
     def __str__(self):
-        return 'xmlns="%s"' % (DICTIONARY[self.index],)
+        return "xmlns=%s" % quoteattr(DICTIONARY[self.index])
 
     def to_bytes(self) -> bytes:
         """
@@ -165,7 +171,7 @@ class DictionaryXmlnsAttributeRecord(Attribute):
         self.index = index
 
     def __str__(self):
-        return 'xmlns:%s="%s"' % (self.prefix, DICTIONARY[self.index])
+        return "xmlns:%s=%s" % (self.prefix, quoteattr(DICTIONARY[self.index]))
 
     def to_bytes(self) -> bytes:
         """
@@ -198,7 +204,7 @@ class ShortXmlnsAttributeRecord(Attribute):
         return bytes
 
     def __str__(self):
-        return 'xmlns="%s"' % (self.value,)
+        return "xmlns=%s" % quoteattr(self.value)
 
     @classmethod
     def parse(cls, fp) -> Self:
@@ -221,7 +227,7 @@ class XmlnsAttributeRecord(Attribute):
         return bytes
 
     def __str__(self):
-        return 'xmlns:%s="%s"' % (self.name, self.value)
+        return "xmlns:%s=%s" % (self.name, quoteattr(self.value))
 
     @classmethod
     def parse(cls, fp) -> Self:

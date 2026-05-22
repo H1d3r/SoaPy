@@ -1,7 +1,12 @@
 import logging as log
+from xml.sax.saxutils import escape as xml_escape
 
 from .record import Element, EndElementRecord, record
 from .text import Text
+
+
+def _escape_xml_text(value: str) -> str:
+    return xml_escape(value, {'"': "&quot;"})
 
 
 def print_records(records, first_call=True) -> str:
@@ -17,7 +22,7 @@ def print_records(records, first_call=True) -> str:
         if isinstance(r, EndElementRecord):
             continue
 
-        output += str(r)
+        output += _escape_xml_text(str(r)) if isinstance(r, Text) else str(r)
         new_line = ""
         if hasattr(r, "childs"):
             new_line = print_records(r.childs, False)
@@ -42,6 +47,8 @@ def pretty_print_records(records, skip=0, first_call=True) -> str:
             continue
         if isinstance(r, Element):
             output += str(r)
+        elif isinstance(r, Text):
+            output += _escape_xml_text(str(r))
         else:
             output += str(r)
 

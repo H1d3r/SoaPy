@@ -1,5 +1,6 @@
 import datetime
 import logging
+import re
 import socket
 from base64 import b64decode
 from enum import IntFlag
@@ -26,6 +27,11 @@ from .soap_templates import (
     LDAP_PUT_FSTRING,
     LDAP_QUERY_FSTRING,
     NAMESPACES,
+)
+
+
+_BARE_AMPERSAND_RE = re.compile(
+    r"&(?!amp;|lt;|gt;|apos;|quot;|#[0-9]+;|#x[0-9a-fA-F]+;)"
 )
 
 
@@ -628,6 +634,156 @@ class ADWSConnect:
 
         return (et, True)
 
+    @staticmethod
+    def _is_valid_xml_char(char: str) -> bool:
+        codepoint = ord(char)
+        return (
+            codepoint in (0x09, 0x0A, 0x0D)
+            or 0x20 <= codepoint <= 0xD7FF
+            or 0xE000 <= codepoint <= 0xFFFD
+            or 0x10000 <= codepoint <= 0x10FFFF
+        )
+
+    @classmethod
+    def _replace_invalid_xml_chars(cls, xmlstr: str) -> tuple[str, int, list[int]]:
+        invalid_offsets: list[int] = []
+        cleaned: list[str] = []
+        invalid_count = 0
+
+        for offset, char in enumerate(xmlstr):
+            if cls._is_valid_xml_char(char):
+                cleaned.append(char)
+                continue
+
+            invalid_count += 1
+            if len(invalid_offsets) < 5:
+                invalid_offsets.append(offset)
+            cleaned.append("\ufffd")
+
+        return ("".join(cleaned) if invalid_count else xmlstr, invalid_count, invalid_offsets)
+
+    @staticmethod
+    def _escape_bare_ampersands(xmlstr: str) -> tuple[str, int]:
+        return _BARE_AMPERSAND_RE.subn("&amp;", xmlstr)
+
+    @staticmethod
+    def _is_xml_name_start_char(char: str) -> bool:
+        return char.isalpha() or char in "_:"
+
+    @staticmethod
+    def _is_xml_name_char(char: str) -> bool:
+        return char.isalnum() or char in "_:.-"
+
+    @classmethod
+    def _looks_like_xml_tag(cls, xmlstr: str, offset: int) -> bool:
+        if xmlstr.startswith(("<!--", "<![CDATA[", "<?", "<!DOCTYPE"), offset):
+            return True
+
+        name_start = offset + 1
+        is_end_tag = name_start < len(xmlstr) and xmlstr[name_start] == "/"
+        if is_end_tag:
+            name_start += 1
+
+        if name_start >= len(xmlstr) or not cls._is_xml_name_start_char(xmlstr[name_start]):
+            return False
+
+        name_end = name_start + 1
+        while name_end < len(xmlstr) and cls._is_xml_name_char(xmlstr[name_end]):
+            name_end += 1
+
+        if name_end >= len(xmlstr):
+            return False
+
+        next_char = xmlstr[name_end]
+        if next_char == ">":
+            return True
+        if next_char == "/" and name_end + 1 < len(xmlstr) and xmlstr[name_end + 1] == ">":
+            return True
+        if not next_char.isspace():
+            return False
+
+        tag_end = xmlstr.find(">", name_end)
+        next_tag = xmlstr.find("<", name_end)
+        if tag_end == -1 or (next_tag != -1 and next_tag < tag_end):
+            return False
+
+        tag_remainder = xmlstr[name_end:tag_end].strip()
+        if is_end_tag:
+            return not tag_remainder
+        if tag_remainder in ("", "/"):
+            return True
+
+        return "=" in tag_remainder
+
+    @classmethod
+    def _escape_obvious_stray_angle_brackets(cls, xmlstr: str) -> tuple[str, int]:
+        escaped: list[str] = []
+        escaped_count = 0
+
+        for offset, char in enumerate(xmlstr):
+            if char == "<" and not cls._looks_like_xml_tag(xmlstr, offset):
+                escaped.append("&lt;")
+                escaped_count += 1
+                continue
+            escaped.append(char)
+
+        return ("".join(escaped) if escaped_count else xmlstr, escaped_count)
+
+    @staticmethod
+    def _trim_to_xml_document(xmlstr: str) -> tuple[str, int]:
+        start = xmlstr.find("<")
+        end = xmlstr.rfind(">")
+
+        if start == -1 or end == -1 or end <= start:
+            return xmlstr, 0
+
+        trimmed = xmlstr[start : end + 1]
+        removed = start + (len(xmlstr) - end - 1)
+        return (trimmed, removed) if removed else (xmlstr, 0)
+
+    def _parse_xml_response(self, xmlstr: str) -> ElementTree.Element:
+        try:
+            return ElementTree.fromstring(xmlstr)
+        except ElementTree.ParseError as original_error:
+            repaired = xmlstr
+            repair_notes: list[str] = []
+
+            repaired, invalid_count, invalid_offsets = self._replace_invalid_xml_chars(repaired)
+            if invalid_count:
+                repair_notes.append(
+                    f"replaced {invalid_count} invalid XML character(s) at offsets {invalid_offsets}"
+                )
+
+            repaired, ampersand_count = self._escape_bare_ampersands(repaired)
+            if ampersand_count:
+                repair_notes.append(f"escaped {ampersand_count} bare ampersand(s)")
+
+            repaired, angle_count = self._escape_obvious_stray_angle_brackets(repaired)
+            if angle_count:
+                repair_notes.append(f"escaped {angle_count} stray angle bracket(s)")
+
+            repaired, trimmed_count = self._trim_to_xml_document(repaired)
+            if trimmed_count:
+                repair_notes.append(f"trimmed {trimmed_count} non-XML character(s)")
+
+            if repaired != xmlstr:
+                try:
+                    parsed = ElementTree.fromstring(repaired)
+                except ElementTree.ParseError:
+                    logging.debug(
+                        "Unable to recover malformed ADWS XML response after repairs; original error: %s",
+                        original_error,
+                    )
+                else:
+                    logging.warning(
+                        "Recovered malformed ADWS XML response: %s; original parser error: %s",
+                        "; ".join(repair_notes),
+                        original_error,
+                    )
+                    return parsed
+
+            raise original_error
+
     def _handle_str_to_xml(self, xmlstr: str) -> ElementTree.Element | None:
         """Takes an xml string and returns an Element of the root
          node of an xml object.
@@ -643,9 +799,6 @@ class ADWSConnect:
             ADWSError: Raises if there is a fault in the
             soap message return by the server
         """
-
-        if ":Fault>" and ":Reason>" not in xmlstr:
-            return ElementTree.fromstring(xmlstr)
 
         def manually_cut_out_fault(xml_str: str) -> str:
             """cut out the fault text description using
@@ -663,17 +816,18 @@ class ADWSConnect:
             endtag = xml_str[starttag:].find(":Text")
             return xml_str[starttag : starttag + endtag]
 
-        et: ElementTree.Element | None = None
         try:
-            et = ElementTree.fromstring(xmlstr)
+            et = self._parse_xml_response(xmlstr)
         except ElementTree.ParseError:
-            msg = manually_cut_out_fault(xmlstr)
-            raise ADWSError(msg)
+            if ":Fault>" in xmlstr or ":Reason>" in xmlstr:
+                msg = manually_cut_out_fault(xmlstr)
+                raise ADWSError(msg)
+            raise
 
         base_msg = str()
 
         fault = et.find(".//soapenv:Fault", namespaces=NAMESPACES)
-        if not fault:  # maybe there isnt actually anything erroring?
+        if fault is None:  # maybe there isnt actually anything erroring?
             return et
 
         reason = fault.find(".//soapenv:Text", namespaces=NAMESPACES)
