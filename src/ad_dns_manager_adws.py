@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-ADWS DNS helpers (single-file).
-
-This module implements AD-integrated DNS operations over ADWS (Create / Put / Delete)
-and reproduces the binary DNS structures required to serialize/deserialize the
-addata:dnsRecord attribute.
-
-This version:
- - Discovers the exact dnsZone DN as returned by the DC and uses it as the parent
-   container for dnsNode creation (avoids constructing "DC=example.local" mistakes).
- - Creates dnsNode objects via LDAP ResourceFactory and deliberately omits addata:dNSTombstoned
-   because writing that attribute via ADWS often triggers validation errors (e.g. BadPutOrCreateValue).
-   Tombstoning is managed by the DC and does not affect normal create/delete operations,
-   so use the dedicated tombstone/resurrect helpers (or LDAP) later if you need to change that state.
- - Removes inline SOAP/XML templates: they are now imported from src.soap_templates
-   to keep this file focused on logic and binary DNS structures.
- - Prints debug payloads for inspection (use logger if desired).
-"""
 
 from base64 import b64encode, b64decode
 from uuid import uuid4

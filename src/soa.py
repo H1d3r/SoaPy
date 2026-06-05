@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-soa.py
-
-Main CLI entrypoint for SOAPy ADWS operations, extended to support:
-  - AD-integrated DNS management (add/modify/remove/tombstone/resurrect)
-  - Computer management (create/delete/disable)
-  - Shadow Credentials (msDS-KeyCredentialLink) management
-  - RBCD, SPN, ASREP attacks
-
-Shadow Credentials options:
-  --shadow-creds ACTION   Shadow Credentials action (list/add/remove/clear/info)
-  --shadow-target TARGET  Target account for Shadow Credentials
-  --device-id ID          Device ID for remove/info actions
-  --cert-filename NAME    Filename for certificate export
-  --cert-export TYPE      Export type: PEM or PFX (default: PFX)
-  --cert-password PASS    Password for PFX file
-  --shadow-creds-help     Display detailed Shadow Credentials help
-"""
 
 import argparse
 import logging

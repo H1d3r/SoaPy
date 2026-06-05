@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-shadow_credentials.py
-
-Shadow Credentials (msDS-KeyCredentialLink) management via ADWS for SOAPy.
-This module provides functionality similar to pyWhisker but operates over ADWS
-instead of direct LDAP connections.
-
-Supports:
-  - list: List all KeyCredentials for a target
-  - add: Add a new KeyCredential (generates certificate)
-  - remove: Remove a specific KeyCredential by DeviceID
-  - clear: Remove all KeyCredentials from target
-  - info: Show detailed info about a specific KeyCredential
-
-Requirements:
-  - dsinternals (pip install dsinternals)
-  - cryptography
-"""
 
 import random
 import string
