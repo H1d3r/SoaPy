@@ -2,6 +2,7 @@ import datetime
 import logging
 import re
 import socket
+import sys
 from base64 import b64decode
 from enum import IntFlag
 from typing import Self, Type
@@ -871,8 +872,14 @@ class ADWSConnect:
         return f"{value}{flag_results}"
 
     def _pretty_print_response(
-        self, et: ElementTree.Element, print_synthetic_vars: bool = False, parse_values: bool = False
-    ) -> None:
+        self,
+        et: ElementTree.Element,
+        print_synthetic_vars: bool = False,
+        parse_values: bool = False,
+        show_no_objects_message: bool = True,
+        print_trailing_separator: bool = True,
+        flush_each_object: bool = False,
+    ) -> int:
         """Pretty print the xml ldap objects in the response.
 
         Handle translating types from LDAPSyntax to human readable
@@ -881,13 +888,24 @@ class ADWSConnect:
             et (ElementTree.Element): response xml element tree
             print_synthetic_vars (bool): print synthetic vars, see ([MS-ADDM]: 2.3.3)
             parse_values (bool): Parse attributes to readable format
+            show_no_objects_message (bool): Print the no-results message when no objects are present.
+            print_trailing_separator (bool): Print the final separator after all objects.
+            flush_each_object (bool): Flush stdout after each object.
+
+        Returns:
+            int: Number of objects printed.
         """
 
-        obj = et.findall(".//ad:value/../..", namespaces=NAMESPACES)
+        obj = self._iter_response_objects(et)
         if not obj:
+            if not show_no_objects_message:
+                return 0
             print("[-] No objects found")
+            if print_trailing_separator:
+                print("--------------------")
+            return 0
 
-        for item in et.findall(".//ad:value/../..", namespaces=NAMESPACES):
+        for item in obj:
             synthetic_attributes = []
             
 
@@ -1003,12 +1021,13 @@ class ADWSConnect:
                     object_values[name] = ", ".join(parsed if parsed else values)
 
             format_str = f"{{}}: {{}}"
-            print(
-                ("--------------------")
-            )
+            print("--------------------")
 
             for k, v in object_values.items():
                 print(format_str.format(k, v))
+
+            if flush_each_object:
+                sys.stdout.flush()
 
             """
             if print_synthetic_vars:
@@ -1021,9 +1040,10 @@ class ADWSConnect:
                     ]
                     print(f"{name}: {' '.join(values)}")
             """
-        print(
-                ("--------------------")
-            )
+        if print_trailing_separator:
+            print("--------------------")
+
+        return len(obj)
 
     def put(
         self,
@@ -1114,23 +1134,43 @@ class ADWSConnect:
 
         ElementTree.register_namespace("wsen", NAMESPACES["wsen"])
         results: ElementTree.Element = ElementTree.Element("wsen:Items")
+        printed_objects = 0
         more_results = True
         while more_results:
             et, more_results = self._pull_results(
                 remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
             )
 
+            page_results: ElementTree.Element = ElementTree.Element("wsen:Items")
             for item in et.findall(".//wsen:Items", namespaces=NAMESPACES):
+                page_results.append(item)
                 results.append(item)
 
-        self._expand_ranged_attributes(
-            remoteName=self._fqdn,
-            query=query,
-            basedn=basedn,
-            results=results,
-        )
+            if print_incrementally:
+                self._expand_ranged_attributes(
+                    remoteName=self._fqdn,
+                    query=query,
+                    basedn=basedn,
+                    results=page_results,
+                )
+                printed_objects += self._pretty_print_response(
+                    page_results,
+                    parse_values=parse_values,
+                    show_no_objects_message=False,
+                    print_trailing_separator=False,
+                    flush_each_object=True,
+                )
 
-        if print_incrementally:
+        if not print_incrementally:
+            self._expand_ranged_attributes(
+                remoteName=self._fqdn,
+                query=query,
+                basedn=basedn,
+                results=results,
+            )
+        elif printed_objects:
+            print("--------------------")
+        else:
             self._pretty_print_response(results, parse_values=parse_values)
 
         return results
