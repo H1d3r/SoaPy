@@ -522,8 +522,28 @@ def disable_machine_account(
     print(f"[+] Computer {sam} successfully disabled.")
     return True
 
+
+def bind_adws(
+    username: str,
+    ip: str,
+    domain: str,
+    auth: ADWSAuthType,
+    resource: str = "Enumeration",
+) -> bool:
+    """Authenticate to ADWS and complete the NMF bind for a resource endpoint."""
+    print(f"[*] Attempting ADWS bind to {ip} Windows/{resource} as {domain}\\{username}")
+    try:
+        ADWSConnect(ip, domain, username, auth, resource)
+    except Exception as e:
+        print(f"[-] ADWS bind failed: {e}")
+        return False
+
+    print(f"[+] ADWS bind successful on {ip} Windows/{resource}")
+    return True
+
+
 def run_cli():
-    print("""
+    print(r"""
   ____   ___    _    ____        
  / ___| / _ \  / \  |  _ \ _   _ 
  \___ \| | | |/ _ \ | |_) | | | |
@@ -585,6 +605,7 @@ github.com/jlevere
     enum.add_argument("-f", "--filter", action="store", metavar="attr,attr,...", help="Attributes to select, comma separated")
     enum.add_argument("-dn", "--distinguishedname", action="store", metavar="distinguishedname", help="The root object's distinguishedName for the query")
     enum.add_argument("-p", "--parse", action="store_true", help="Parse attributes to human readable format")
+    enum.add_argument("--bind", action="store_true", help="Authenticate and bind to ADWS without running a query")
 
     # Writing options
     writing = parser.add_argument_group('Writing')
@@ -698,7 +719,16 @@ github.com/jlevere
 
     try:
 
-        if options.shadow_creds:
+        if options.bind:
+            if not bind_adws(
+                username=username,
+                ip=remoteName,
+                domain=domain,
+                auth=auth,
+            ):
+                raise SystemExit(1)
+
+        elif options.shadow_creds:
             if not SHADOW_CREDS_AVAILABLE:
                 logging.critical("Shadow Credentials module not available. Install dsinternals: pip install dsinternals")
                 logging.critical("Use --shadow-creds-help for more information")
