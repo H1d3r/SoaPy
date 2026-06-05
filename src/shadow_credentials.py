@@ -34,27 +34,8 @@ from src.adws import ADWSAuthType, ADWSConnect
 from src.soap_templates import NAMESPACES
 
 
-# ============================================================================
-# HELP TEXT - Displayed with --shadow-creds-help
-# ============================================================================
-
 SHADOW_CREDS_HELP = """
-================================================================================
-                    SHADOW CREDENTIALS VIA ADWS - HELP
-================================================================================
 
-This feature allows manipulation of the msDS-KeyCredentialLink attribute 
-(Shadow Credentials) via ADWS, similar to pyWhisker but over port 9389.
-
-PREREQUISITES
--------------
-  - Python: pip install dsinternals cryptography
-  - AD: Domain Functional Level Windows Server 2016+
-  - AD: DC must have certificate configured (AD CS / PKI)
-  - Permissions: Write access to target's msDS-KeyCredentialLink attribute
-
-USAGE
------
   List KeyCredentials:
     soapy domain/user:'pass'@dc --shadow-creds list --shadow-target victim
 
@@ -125,7 +106,6 @@ REFERENCES
   - https://github.com/ShutdownRepo/pywhisker
   - https://github.com/dirkjanm/PKINITtools
 
-================================================================================
 """
 
 
@@ -539,11 +519,6 @@ class ShadowCredentialsADWS:
         
         print("[+] msDS-KeyCredentialLink cleared successfully")
         return True
-
-
-# ============================================================================
-# CLI helper functions for integration with soa.py
-# ============================================================================
 
 def shadow_credentials_list(
     target: str,

@@ -51,9 +51,6 @@ except ImportError:
     def print_shadow_creds_help():
         print("Shadow Credentials module not available. Install dsinternals: pip install dsinternals")
 
-# ---------------------------------------------------------------------------
-# Utility helpers
-# ---------------------------------------------------------------------------
 
 def _create_empty_sd():
     sd = SR_SECURITY_DESCRIPTOR()
@@ -525,11 +522,6 @@ def disable_machine_account(
     print(f"[+] Computer {sam} successfully disabled.")
     return True
 
-
-# ---------------------------------------------------------------------------
-# CLI entrypoint: run_cli()
-# ---------------------------------------------------------------------------
-
 def run_cli():
     print("""
 ███████╗ ██████╗  █████╗ ██████╗ ██╗   ██╗
@@ -705,9 +697,7 @@ github.com/jlevere
     auth = KerberosAuth() if options.kerberos else NTLMAuth(password=password, hashes=options.nthash)
 
     try:
-        # -----------------------
-        # Shadow Credentials operations
-        # -----------------------
+
         if options.shadow_creds:
             if not SHADOW_CREDS_AVAILABLE:
                 logging.critical("Shadow Credentials module not available. Install dsinternals: pip install dsinternals")
