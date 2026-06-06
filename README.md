@@ -1,3 +1,6 @@
+
+> Please see the SOAPy Wiki for installation and operational guidance: https://github.com/logangoins/SOAPy/wiki 
+
 # Description
 SOAPy is a Proof of Concept (PoC) utility for conducting offensive interaction with Active Directory Web Services (ADWS) through a SOCKS5 proxy.
 
