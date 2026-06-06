@@ -223,7 +223,7 @@ def add_computer(
         domain_dn = ",".join(domain_parts)
         container_dn = f"CN=Computers,{domain_dn}"
 
-    logging.info(f"[+] Creating computer account {sam} in {container_dn} via ADWS ResourceFactory")
+    logging.info(f"Creating computer account {sam} in {container_dn} via ADWS ResourceFactory")
 
     import secrets
 
@@ -287,13 +287,13 @@ def add_computer(
     if et is None:
         raise RuntimeError("AddRequest response empty or malformed.")
 
-    logging.info("[+] AddRequest successful. Locating newly created object...")
+    logging.info("AddRequest successful. Locating newly created object...")
 
     dn = getAccountDN(target=sam, username=username, ip=ip, domain=domain, auth=auth)
     if not dn:
         raise RuntimeError("Failed to locate DN of the newly created computer.")
 
-    logging.info(f"[+] Created object DN: {dn}")
+    logging.info(f"Created object DN: {dn}")
 
     print(f"[+] Computer {sam} successfully created in {dn}")
     return True
