@@ -411,7 +411,7 @@ def set_rbcd(
             if sd:
                 target_sd = SR_SECURITY_DESCRIPTOR(data=b64decode(sd))
 
-    if not account_sid:
+    if not target_dn or not account_sid:
         logging.critical(f"Unable to find {target} or {account}.")
         raise SystemExit()
 
@@ -443,6 +443,57 @@ def set_rbcd(
 
     print(f"[+] msDS-AllowedToActOnBehalfOfIdentity {'removed' if remove else 'written'} successfully!")
     print(f"[+] {account} {'can not' if remove else 'can'} delegate to {target}")
+
+
+def handle_rbcd(
+    rbcd_action_or_source: str,
+    rbcd_source: str | None,
+    rbcd_target: str | None,
+    legacy_target: str | None,
+    legacy_remove: bool,
+    username: str,
+    ip: str,
+    domain: str,
+    auth: ADWSAuthType,
+) -> None:
+    """Dispatch RBCD operations using action-style or legacy source-style options."""
+    action = rbcd_action_or_source.casefold()
+    if action in ["add", "remove"]:
+        if not rbcd_source:
+            logging.critical("--rbcd-source is required when using \"--rbcd %s\"", action)
+            raise SystemExit(1)
+        if not rbcd_target:
+            logging.critical("--rbcd-target is required when using \"--rbcd %s\"", action)
+            raise SystemExit(1)
+
+        set_rbcd(
+            ip=ip,
+            domain=domain,
+            target=rbcd_target,
+            account=rbcd_source,
+            username=username,
+            auth=auth,
+            remove=action == "remove",
+        )
+        return
+
+    if rbcd_source or rbcd_target:
+        logging.critical("--rbcd must be \"add\" or \"remove\" when using --rbcd-source/--rbcd-target")
+        raise SystemExit(1)
+
+    if not legacy_target:
+        logging.critical('Legacy "--rbcd SOURCE" syntax must be used with "--account TARGET"')
+        raise SystemExit(1)
+
+    set_rbcd(
+        ip=ip,
+        domain=domain,
+        target=legacy_target,
+        account=rbcd_action_or_source,
+        username=username,
+        auth=auth,
+        remove=legacy_remove,
+    )
 
 
 def disable_machine_account(
@@ -608,7 +659,9 @@ github.com/jlevere
 
     # Writing options
     writing = parser.add_argument_group('Writing')
-    writing.add_argument("--rbcd", action="store", metavar="source", help="Write/remove RBCD (source computer)")
+    writing.add_argument("--rbcd", action="store", metavar="ACTION", help="RBCD action: add, remove")
+    writing.add_argument("--rbcd-source", action="store", metavar="SOURCE", help="Source account to allow for RBCD")
+    writing.add_argument("--rbcd-target", action="store", metavar="TARGET", help="Target account to modify for RBCD")
     writing.add_argument("--spn", action="store", metavar="value", help='Write servicePrincipalName value (use --remove to delete)')
     writing.add_argument("--asrep", action="store_true", help="Write DONT_REQ_PREAUTH flag (asrep roastable)")
     writing.add_argument("--account", action="store", metavar="account", help="Account to perform operations on")
@@ -795,17 +848,16 @@ github.com/jlevere
 
         # RBCD
         elif options.rbcd is not None:
-            if not options.account:
-                logging.critical('"--rbcd" must be used with "--account"')
-                raise SystemExit()
-            set_rbcd(
+            handle_rbcd(
+                rbcd_action_or_source=options.rbcd,
+                rbcd_source=options.rbcd_source,
+                rbcd_target=options.rbcd_target,
+                legacy_target=options.account,
+                legacy_remove=options.remove,
                 ip=remoteName,
                 domain=domain,
-                target=options.account,
-                account=options.rbcd,
                 username=username,
                 auth=auth,
-                remove=options.remove,
             )
 
         # SPN write/remove
