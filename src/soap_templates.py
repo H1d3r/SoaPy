@@ -91,6 +91,7 @@ LDAP_RENEW_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap
     <s:Body xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
         <wsen:Renew>
             <wsen:EnumerationContext>{enum_ctx}</wsen:EnumerationContext>
+            <wsen:Expires>{expires}</wsen:Expires>
         </wsen:Renew>
     </s:Body>
 </s:Envelope>"""

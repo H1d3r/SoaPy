@@ -38,6 +38,7 @@ _BARE_AMPERSAND_RE = re.compile(
 )
 
 _ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS = 15 * 60
+_ENUMERATION_CONTEXT_RENEW_DURATION = "PT30M"
 
 
 # https://learn.microsoft.com/en-us/windows/win32/adschema/a-systemflags
@@ -648,6 +649,7 @@ class ADWSConnect:
             "uuid": str(uuid4()),
             "fqdn": remoteName,
             "enum_ctx": enum_ctx,
+            "expires": _ENUMERATION_CONTEXT_RENEW_DURATION,
         }
 
         nmf.send(LDAP_RENEW_FSTRING.format(**renew_vars))
