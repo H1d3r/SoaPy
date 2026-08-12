@@ -3,6 +3,7 @@ import logging
 import re
 import socket
 import sys
+import time
 from base64 import b64decode
 from enum import IntFlag
 from typing import Self, Type
@@ -27,6 +28,7 @@ from .soap_templates import (
     LDAP_PULL_FSTRING,
     LDAP_PUT_FSTRING,
     LDAP_QUERY_FSTRING,
+    LDAP_RENEW_FSTRING,
     NAMESPACES,
 )
 
@@ -34,6 +36,8 @@ from .soap_templates import (
 _BARE_AMPERSAND_RE = re.compile(
     r"&(?!amp;|lt;|gt;|apos;|quot;|#[0-9]+;|#x[0-9a-fA-F]+;)"
 )
+
+_ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS = 15 * 60
 
 
 # https://learn.microsoft.com/en-us/windows/win32/adschema/a-systemflags
@@ -635,6 +639,34 @@ class ADWSConnect:
 
         return (et, True)
 
+    def _renew_enumeration(
+        self, remoteName: str, nmf: ms_nmf.NMFConnection, enum_ctx: str
+    ) -> str:
+        """Renew an active enumeration context without restarting its query."""
+        logging.info("Renewing ADWS enumeration context")
+        renew_vars = {
+            "uuid": str(uuid4()),
+            "fqdn": remoteName,
+            "enum_ctx": enum_ctx,
+        }
+
+        nmf.send(LDAP_RENEW_FSTRING.format(**renew_vars))
+        renew_response = nmf.recv()
+
+        et = self._handle_str_to_xml(renew_response)
+        if not et:
+            raise ValueError("was unable to parse xml from the server response")
+
+        # A RenewResponse may replace the context representation. If it does not,
+        # the context supplied in the request remains current.
+        renewed_ctx = et.find(
+            ".//wsen:RenewResponse/wsen:EnumerationContext", NAMESPACES
+        )
+        if renewed_ctx is None or renewed_ctx.text is None:
+            return enum_ctx
+
+        return renewed_ctx.text
+
     @staticmethod
     def _is_valid_xml_char(char: str) -> bool:
         codepoint = ord(char)
@@ -1135,11 +1167,29 @@ class ADWSConnect:
         ElementTree.register_namespace("wsen", NAMESPACES["wsen"])
         results: ElementTree.Element = ElementTree.Element("wsen:Items")
         printed_objects = 0
+        last_context_renewal = time.monotonic()
         more_results = True
         while more_results:
+            if (
+                time.monotonic() - last_context_renewal
+                >= _ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS
+            ):
+                enum_ctx = self._renew_enumeration(
+                    remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
+                )
+                last_context_renewal = time.monotonic()
+
             et, more_results = self._pull_results(
                 remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
             )
+
+            # A PullResponse can replace an enumeration context. Reusing the old
+            # one after that point results in InvalidEnumerationContext.
+            updated_ctx = et.find(
+                ".//wsen:PullResponse/wsen:EnumerationContext", NAMESPACES
+            )
+            if updated_ctx is not None and updated_ctx.text is not None:
+                enum_ctx = updated_ctx.text
 
             page_results: ElementTree.Element = ElementTree.Element("wsen:Items")
             for item in et.findall(".//wsen:Items", namespaces=NAMESPACES):

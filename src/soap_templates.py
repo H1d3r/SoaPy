@@ -76,6 +76,26 @@ LDAP_PULL_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-
 </s:Envelope>"""
 
 
+LDAP_RENEW_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
+    xmlns:a="http://www.w3.org/2005/08/addressing"
+    xmlns:ad="http://schemas.microsoft.com/2008/1/ActiveDirectory">
+    <s:Header>
+        <a:Action s:mustUnderstand="1">http://schemas.xmlsoap.org/ws/2004/09/enumeration/Renew</a:Action>
+        <ad:instance>ldap:389</ad:instance>
+        <a:MessageID>urn:uuid:{uuid}</a:MessageID>
+        <a:ReplyTo>
+            <a:Address>http://www.w3.org/2005/08/addressing/anonymous</a:Address>
+        </a:ReplyTo>
+        <a:To s:mustUnderstand="1">net.tcp://{fqdn}:9389/ActiveDirectoryWebServices/Windows/Enumeration</a:To>
+    </s:Header>
+    <s:Body xmlns:wsen="http://schemas.xmlsoap.org/ws/2004/09/enumeration">
+        <wsen:Renew>
+            <wsen:EnumerationContext>{enum_ctx}</wsen:EnumerationContext>
+        </wsen:Renew>
+    </s:Body>
+</s:Envelope>"""
+
+
 LDAP_PUT_FSTRING: str = """<s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"
         xmlns:a="http://www.w3.org/2005/08/addressing"
         xmlns:addata="http://schemas.microsoft.com/2008/1/ActiveDirectory/Data"
