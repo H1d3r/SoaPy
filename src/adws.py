@@ -43,6 +43,11 @@ _ENUMERATION_CONTEXT_RENEW_DURATION = "PT30M"
 _ADWS_REQUEST_RETRIES = 3
 _ADWS_RETRY_BASE_DELAY_SECONDS = 1
 _ADWS_TRANSIENT_FAULTS = ("OperationTimeout", "ReservedConnectionInvalidated")
+_ADWS_ENUMERATION_RESTARTS = 3
+_ADWS_INVALID_ENUMERATION_FAULTS = (
+    "NoSuchEnumCtxGuidExists",
+    "ReservedConnectionInvalidated",
+)
 
 
 # https://learn.microsoft.com/en-us/windows/win32/adschema/a-systemflags
@@ -1343,6 +1348,9 @@ class ADWSConnect:
             last_context_renewal = time.monotonic()
             collected_objects = 0
             collected_pages = 0
+            received_objects = 0
+            enumeration_restarts = 0
+            seen_object_ids: set[str] = set()
             print(
                 "[*] Collecting ADWS data; results will print when collection "
                 "completes",
@@ -1351,18 +1359,55 @@ class ADWSConnect:
             )
             more_results = True
             while more_results:
-                if (
-                    time.monotonic() - last_context_renewal
-                    >= _ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS
-                ):
-                    enum_ctx = self._renew_enumeration(
+                try:
+                    if (
+                        time.monotonic() - last_context_renewal
+                        >= _ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS
+                    ):
+                        enum_ctx = self._renew_enumeration(
+                            remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
+                        )
+                        last_context_renewal = time.monotonic()
+
+                    et, more_results = self._pull_results(
                         remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
                     )
-                    last_context_renewal = time.monotonic()
+                except ADWSError as error:
+                    if not any(
+                        code in str(error) for code in _ADWS_INVALID_ENUMERATION_FAULTS
+                    ):
+                        raise
+                    if enumeration_restarts == _ADWS_ENUMERATION_RESTARTS:
+                        raise
 
-                et, more_results = self._pull_results(
-                    remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
-                )
+                    enumeration_restarts += 1
+                    print(
+                        "[!] ADWS enumeration context was invalidated; restarting "
+                        f"query {enumeration_restarts}/{_ADWS_ENUMERATION_RESTARTS} "
+                        "and retaining collected objects",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    write_data(
+                        {
+                            "type": "restart",
+                            "id": query_id,
+                            "attempt": enumeration_restarts,
+                            "message": str(error),
+                        }
+                    )
+                    enum_ctx = self._query_enumeration(
+                        remoteName=self._fqdn,
+                        nmf=self._nmf,
+                        query=query,
+                        basedn=basedn,
+                        attributes=attributes,
+                    )
+                    if enum_ctx is None:
+                        raise ValueError("unable to restart enumeration context")
+                    last_context_renewal = time.monotonic()
+                    more_results = True
+                    continue
 
                 # A PullResponse can replace an enumeration context. Reusing the old
                 # one after that point results in InvalidEnumerationContext.
@@ -1375,7 +1420,7 @@ class ADWSConnect:
                 page_items = et.findall(".//wsen:Items", namespaces=NAMESPACES)
                 if page_items:
                     collected_pages += len(page_items)
-                    collected_objects += sum(
+                    received_objects += sum(
                         len(self._iter_response_objects(page)) for page in page_items
                     )
                     write_data(
@@ -1388,16 +1433,30 @@ class ADWSConnect:
                             ],
                         }
                     )
+
+                    new_objects = 0
+                    for page in page_items:
+                        unique_page = ElementTree.Element(page.tag, page.attrib)
+                        for item in self._iter_response_objects(page):
+                            identity = self._get_object_identity(item)
+                            if identity is not None:
+                                if identity in seen_object_ids:
+                                    continue
+                                seen_object_ids.add(identity)
+                            unique_page.append(item)
+                            new_objects += 1
+                        if len(unique_page):
+                            results.append(unique_page)
+                    collected_objects += new_objects
+
                     print(
                         "[*] Collecting ADWS data: "
-                        f"{collected_objects} objects received across "
-                        f"{collected_pages} pages",
+                        f"{collected_objects} unique objects saved "
+                        f"({received_objects} received across "
+                        f"{collected_pages} pages)",
                         file=sys.stderr,
                         flush=True,
                     )
-
-                for item in page_items:
-                    results.append(item)
 
             write_data({"type": "base_complete", "id": query_id})
 
