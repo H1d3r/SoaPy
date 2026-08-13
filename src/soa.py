@@ -1040,9 +1040,10 @@ github.com/jlevere
                     current_query,
                     options.distinguishedname,
                     attributes,
-                    print_incrementally=True,
+                    print_incrementally=False,
                     parse_values=options.parse,
                     data_path=".soapy_data",
+                    print_results=False,
                 )
 
     except Exception as e:

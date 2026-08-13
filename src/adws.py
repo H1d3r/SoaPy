@@ -7,7 +7,7 @@ import sys
 import time
 from base64 import b64decode
 from enum import IntFlag
-from typing import Self, Type
+from typing import Callable, Self, Type
 from uuid import UUID, uuid4
 from xml.etree import ElementTree
 
@@ -515,6 +515,7 @@ class ADWSConnect:
         query: str,
         basedn: str | None,
         results: ElementTree.Element,
+        page_writer: Callable[[list[ElementTree.Element]], None] | None = None,
     ) -> None:
         for item in self._iter_response_objects(results):
             object_dn = self._get_object_distinguished_name(item)
@@ -543,7 +544,10 @@ class ADWSConnect:
                         et, more_results = self._pull_results(
                             remoteName=remoteName, nmf=self._nmf, enum_ctx=enum_ctx
                         )
-                        for page_item in et.findall(".//wsen:Items", namespaces=NAMESPACES):
+                        page_items = et.findall(".//wsen:Items", namespaces=NAMESPACES)
+                        if page_writer is not None and page_items:
+                            page_writer(page_items)
+                        for page_item in page_items:
                             ranged_page.append(page_item)
 
                     merged_values = self._merge_attribute_values(results, ranged_page, attr)
@@ -1206,6 +1210,18 @@ class ADWSConnect:
                                 existing_parts[incoming_part.tag] = incoming_part
                                 continue
 
+                            # Ordinary attributes in a later page/query are a new
+                            # snapshot, not extra values. Appending those snapshots
+                            # produced invalid fields such as "lastLogon: 1, 2".
+                            # RangeLow=0 also starts a newer ranged snapshot. Only
+                            # non-zero ranged segments extend an existing attribute.
+                            incoming_range_low = incoming_part.attrib.get("RangeLow")
+                            if incoming_range_low is None or incoming_range_low == "0":
+                                existing.remove(existing_part)
+                                existing.append(incoming_part)
+                                existing_parts[incoming_part.tag] = incoming_part
+                                continue
+
                             existing_values = {
                                 (value.text, tuple(sorted(value.attrib.items())))
                                 for value in existing_part.findall(
@@ -1292,6 +1308,7 @@ class ADWSConnect:
         print_incrementally: bool = False,
         parse_values: bool = False,
         data_path: str | None = None,
+        print_results: bool = True,
     ) -> ElementTree.Element:
         """Makes an LDAP query using ADWS to the specified server
 
@@ -1302,6 +1319,7 @@ class ADWSConnect:
             print_incrementally (bool): print the results as they come in
             parse_values (bool): When printing results parse to human readable values
             data_path (str): Append successfully collected pages to this recovery file.
+            print_results (bool): Print LDAP objects after collection.
 
         Returns:
             ElementTree.Element: The soap response as xml
@@ -1318,6 +1336,18 @@ class ADWSConnect:
             json.dump(record, data_file, ensure_ascii=False, separators=(",", ":"))
             data_file.write("\n")
             data_file.flush()
+
+        def write_pages(page_items: list[ElementTree.Element]) -> None:
+            write_data(
+                {
+                    "type": "page",
+                    "id": query_id,
+                    "xml": [
+                        ElementTree.tostring(item, encoding="unicode")
+                        for item in page_items
+                    ],
+                }
+            )
 
         write_data(
             {
@@ -1351,12 +1381,17 @@ class ADWSConnect:
             received_objects = 0
             enumeration_restarts = 0
             seen_object_ids: set[str] = set()
-            print(
-                "[*] Collecting ADWS data; results will print when collection "
-                "completes",
-                file=sys.stderr,
-                flush=True,
-            )
+            if print_results:
+                collection_message = (
+                    "[*] Collecting ADWS data; results will print when collection "
+                    "completes"
+                )
+            else:
+                collection_message = (
+                    f"[*] Collecting ADWS data into {data_path}; use --recover-data "
+                    "to print BOFHound-compatible output"
+                )
+            print(collection_message, file=sys.stderr, flush=True)
             more_results = True
             while more_results:
                 try:
@@ -1423,16 +1458,7 @@ class ADWSConnect:
                     received_objects += sum(
                         len(self._iter_response_objects(page)) for page in page_items
                     )
-                    write_data(
-                        {
-                            "type": "page",
-                            "id": query_id,
-                            "xml": [
-                                ElementTree.tostring(item, encoding="unicode")
-                                for item in page_items
-                            ],
-                        }
-                    )
+                    write_pages(page_items)
 
                     new_objects = 0
                     for page in page_items:
@@ -1476,23 +1502,32 @@ class ADWSConnect:
                 query=query,
                 basedn=basedn,
                 results=results,
+                page_writer=write_pages,
             )
-            print(
-                f"[*] ADWS data collection complete; printing {collected_objects} "
-                "objects",
-                file=sys.stderr,
-                flush=True,
-            )
-            if print_incrementally:
-                self._pretty_print_response(
-                    results,
-                    parse_values=parse_values,
-                    flush_each_object=True,
+            if print_results:
+                print(
+                    f"[*] ADWS data collection complete; printing {collected_objects} "
+                    "objects",
+                    file=sys.stderr,
+                    flush=True,
                 )
-            else:
-                self._pretty_print_response(results, parse_values=parse_values)
+                if print_incrementally:
+                    self._pretty_print_response(
+                        results,
+                        parse_values=parse_values,
+                        flush_each_object=True,
+                    )
+                else:
+                    self._pretty_print_response(results, parse_values=parse_values)
 
             write_data({"type": "complete", "id": query_id})
+            if not print_results:
+                print(
+                    f"[+] ADWS data collection complete: {collected_objects} "
+                    f"objects saved to {data_path}; run SOAPy --recover-data",
+                    file=sys.stderr,
+                    flush=True,
+                )
             return results
         except Exception as error:
             write_data({"type": "error", "id": query_id, "message": str(error)})
