@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import re
 import socket
@@ -39,6 +40,9 @@ _BARE_AMPERSAND_RE = re.compile(
 
 _ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS = 5 * 60
 _ENUMERATION_CONTEXT_RENEW_DURATION = "PT30M"
+_ADWS_REQUEST_RETRIES = 3
+_ADWS_RETRY_BASE_DELAY_SECONDS = 1
+_ADWS_TRANSIENT_FAULTS = ("OperationTimeout", "ReservedConnectionInvalidated")
 
 
 # https://learn.microsoft.com/en-us/windows/win32/adschema/a-systemflags
@@ -541,6 +545,13 @@ class ADWSConnect:
                     if merged_values == 0:
                         break
 
+                    print(
+                        "[*] Collecting ADWS ranged data: received "
+                        f"{merged_values} additional {attr} values for {object_dn}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
                     ranged_objects = self._iter_response_objects(ranged_page)
                     if not ranged_objects:
                         break
@@ -591,13 +602,12 @@ class ADWSConnect:
         }
 
         enumeration = LDAP_QUERY_FSTRING.format(**query_vars)
-
-        nmf.send(enumeration)
-        enumerationResponse = nmf.recv()
-
-        et = self._handle_str_to_xml(enumerationResponse)
-        if not et:
-            raise ValueError("was unable to parse xml from the server response")
+        et = self._request_with_retries(
+            remoteName=remoteName,
+            nmf=nmf,
+            request=enumeration,
+            operation="Enumerate",
+        )
 
         enum_ctx = et.find(".//wsen:EnumerationContext", NAMESPACES)
 
@@ -627,12 +637,12 @@ class ADWSConnect:
         }
 
         pull = LDAP_PULL_FSTRING.format(**pull_vars)
-        nmf.send(pull)
-        pullResponse = nmf.recv()
-
-        et = self._handle_str_to_xml(pullResponse)
-        if not et:
-            raise ValueError("was unable to parse xml from the server response")
+        et = self._request_with_retries(
+            remoteName=remoteName,
+            nmf=nmf,
+            request=pull,
+            operation="Pull",
+        )
 
         final_pkt = et.find(".//wsen:EndOfSequence", namespaces=NAMESPACES)
         if final_pkt is not None:
@@ -652,12 +662,12 @@ class ADWSConnect:
             "expires": _ENUMERATION_CONTEXT_RENEW_DURATION,
         }
 
-        nmf.send(LDAP_RENEW_FSTRING.format(**renew_vars))
-        renew_response = nmf.recv()
-
-        et = self._handle_str_to_xml(renew_response)
-        if not et:
-            raise ValueError("was unable to parse xml from the server response")
+        et = self._request_with_retries(
+            remoteName=remoteName,
+            nmf=nmf,
+            request=LDAP_RENEW_FSTRING.format(**renew_vars),
+            operation="Renew",
+        )
 
         # A RenewResponse may replace the context representation. If it does not,
         # the context supplied in the request remains current.
@@ -668,6 +678,58 @@ class ADWSConnect:
             return enum_ctx
 
         return renewed_ctx.text
+
+    def _request_with_retries(
+        self,
+        remoteName: str,
+        nmf: ms_nmf.NMFConnection,
+        request: str,
+        operation: str,
+    ) -> ElementTree.Element:
+        """Send an ADWS request with bounded fault and transport retries."""
+        reconnect_transport = False
+
+        for retry in range(_ADWS_REQUEST_RETRIES + 1):
+            try:
+                if reconnect_transport:
+                    current_socket = getattr(nmf, "_sock", None)
+                    if current_socket is not None:
+                        try:
+                            current_socket.close()
+                        except OSError:
+                            pass
+
+                    nmf = self._connect(remoteName, self._resource)
+                    self._nmf = nmf
+                    reconnect_transport = False
+
+                nmf.send(request)
+                response = nmf.recv()
+                et = self._handle_str_to_xml(response)
+                if not et:
+                    raise ValueError("was unable to parse xml from the server response")
+                return et
+            except ADWSError as error:
+                if not any(code in str(error) for code in _ADWS_TRANSIENT_FAULTS):
+                    raise
+                failure = error
+            except OSError as error:
+                reconnect_transport = True
+                failure = error
+
+            if retry == _ADWS_REQUEST_RETRIES:
+                raise failure
+
+            logging.warning(
+                "ADWS %s failed (%s); retrying request %d/%d",
+                operation,
+                failure,
+                retry + 1,
+                _ADWS_REQUEST_RETRIES,
+            )
+            time.sleep(_ADWS_RETRY_BASE_DELAY_SECONDS * (retry + 1))
+
+        raise RuntimeError("unreachable")
 
     @staticmethod
     def _is_valid_xml_char(char: str) -> bool:
@@ -1079,6 +1141,93 @@ class ADWSConnect:
 
         return len(obj)
 
+    @classmethod
+    def print_soapy_data(
+        cls, data_path: str = ".soapy_data", parse_values: bool = False
+    ) -> tuple[int, int, int]:
+        """Render recovered spool pages in SOAPy's BOFHound-compatible format."""
+        client = object.__new__(cls)
+        recovered: dict[str, ElementTree.Element] = {}
+        unidentified: list[ElementTree.Element] = []
+        page_count = 0
+        invalid_record_count = 0
+
+        with open(data_path, encoding="utf-8") as data_file:
+            for line in data_file:
+                if not line.strip():
+                    continue
+
+                try:
+                    record = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    invalid_record_count += 1
+                    continue
+
+                if not isinstance(record, dict):
+                    invalid_record_count += 1
+                    continue
+
+                if record.get("type") != "page":
+                    continue
+
+                if not isinstance(record.get("xml"), list):
+                    invalid_record_count += 1
+                    continue
+
+                for page_xml in record["xml"]:
+                    try:
+                        page = ElementTree.fromstring(page_xml)
+                    except (ElementTree.ParseError, TypeError):
+                        invalid_record_count += 1
+                        continue
+
+                    page_count += 1
+                    for item in client._iter_response_objects(page):
+                        identity = client._get_object_identity(item)
+                        if identity is None:
+                            unidentified.append(item)
+                            continue
+
+                        existing = recovered.get(identity)
+                        if existing is None:
+                            recovered[identity] = item
+                            continue
+
+                        existing_parts = {part.tag: part for part in list(existing)}
+                        for incoming_part in list(item):
+                            existing_part = existing_parts.get(incoming_part.tag)
+                            if existing_part is None:
+                                existing.append(incoming_part)
+                                existing_parts[incoming_part.tag] = incoming_part
+                                continue
+
+                            existing_values = {
+                                (value.text, tuple(sorted(value.attrib.items())))
+                                for value in existing_part.findall(
+                                    "./ad:value", namespaces=NAMESPACES
+                                )
+                            }
+                            for value in incoming_part.findall(
+                                "./ad:value", namespaces=NAMESPACES
+                            ):
+                                value_key = (value.text, tuple(sorted(value.attrib.items())))
+                                if value_key not in existing_values:
+                                    existing_part.append(value)
+                                    existing_values.add(value_key)
+
+                            existing_part.attrib.update(incoming_part.attrib)
+
+        results = ElementTree.Element("wsen:Items")
+        for item in [*recovered.values(), *unidentified]:
+            results.append(item)
+
+        printed = client._pretty_print_response(
+            results,
+            parse_values=parse_values,
+            flush_each_object=True,
+        )
+        return printed, page_count, invalid_record_count
+
     def put(
         self,
         object_ref: str,
@@ -1136,7 +1285,8 @@ class ADWSConnect:
         basedn: str,
         attributes: list,
         print_incrementally: bool = False,
-        parse_values: bool = False
+        parse_values: bool = False,
+        data_path: str | None = None,
     ) -> ElementTree.Element:
         """Makes an LDAP query using ADWS to the specified server
 
@@ -1146,6 +1296,7 @@ class ADWSConnect:
             baseobj (str): The base objects distinguished name for the query
             print_incrementally (bool): print the results as they come in
             parse_values (bool): When printing results parse to human readable values
+            data_path (str): Append successfully collected pages to this recovery file.
 
         Returns:
             ElementTree.Element: The soap response as xml
@@ -1153,79 +1304,143 @@ class ADWSConnect:
         if self._resource != "Enumeration":
             raise NotImplementedError("Pull is only supported on 'pull' clients")
 
-        enum_ctx = self._query_enumeration(
-            remoteName=self._fqdn,
-            nmf=self._nmf,
-            query=query,
-            basedn=basedn,
-            attributes=attributes,
-        )
-        if enum_ctx is None:
-            logging.error(
-                "Server did not return an enumeration context in response to making a query"
-            )
-            raise ValueError("unable to get enumeration context")
+        query_id = str(uuid4())
+        data_file = open(data_path, "a", encoding="utf-8") if data_path is not None else None
 
-        ElementTree.register_namespace("wsen", NAMESPACES["wsen"])
-        results: ElementTree.Element = ElementTree.Element("wsen:Items")
-        printed_objects = 0
-        last_context_renewal = time.monotonic()
-        more_results = True
-        while more_results:
-            if (
-                time.monotonic() - last_context_renewal
-                >= _ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS
-            ):
-                enum_ctx = self._renew_enumeration(
+        def write_data(record: dict) -> None:
+            if data_file is None:
+                return
+            json.dump(record, data_file, ensure_ascii=False, separators=(",", ":"))
+            data_file.write("\n")
+            data_file.flush()
+
+        write_data(
+            {
+                "type": "query",
+                "id": query_id,
+                "query": query,
+                "base_dn": basedn,
+                "attributes": attributes,
+            }
+        )
+
+        try:
+            enum_ctx = self._query_enumeration(
+                remoteName=self._fqdn,
+                nmf=self._nmf,
+                query=query,
+                basedn=basedn,
+                attributes=attributes,
+            )
+            if enum_ctx is None:
+                logging.error(
+                    "Server did not return an enumeration context in response to making a query"
+                )
+                raise ValueError("unable to get enumeration context")
+
+            ElementTree.register_namespace("wsen", NAMESPACES["wsen"])
+            results: ElementTree.Element = ElementTree.Element("wsen:Items")
+            last_context_renewal = time.monotonic()
+            collected_objects = 0
+            collected_pages = 0
+            print(
+                "[*] Collecting ADWS data; results will print when collection "
+                "completes",
+                file=sys.stderr,
+                flush=True,
+            )
+            more_results = True
+            while more_results:
+                if (
+                    time.monotonic() - last_context_renewal
+                    >= _ENUMERATION_CONTEXT_RENEW_INTERVAL_SECONDS
+                ):
+                    enum_ctx = self._renew_enumeration(
+                        remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
+                    )
+                    last_context_renewal = time.monotonic()
+
+                et, more_results = self._pull_results(
                     remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
                 )
-                last_context_renewal = time.monotonic()
 
-            et, more_results = self._pull_results(
-                remoteName=self._fqdn, nmf=self._nmf, enum_ctx=enum_ctx
+                # A PullResponse can replace an enumeration context. Reusing the old
+                # one after that point results in InvalidEnumerationContext.
+                updated_ctx = et.find(
+                    ".//wsen:PullResponse/wsen:EnumerationContext", NAMESPACES
+                )
+                if updated_ctx is not None and updated_ctx.text is not None:
+                    enum_ctx = updated_ctx.text
+
+                page_items = et.findall(".//wsen:Items", namespaces=NAMESPACES)
+                if page_items:
+                    collected_pages += len(page_items)
+                    collected_objects += sum(
+                        len(self._iter_response_objects(page)) for page in page_items
+                    )
+                    write_data(
+                        {
+                            "type": "page",
+                            "id": query_id,
+                            "xml": [
+                                ElementTree.tostring(item, encoding="unicode")
+                                for item in page_items
+                            ],
+                        }
+                    )
+                    print(
+                        "[*] Collecting ADWS data: "
+                        f"{collected_objects} objects received across "
+                        f"{collected_pages} pages",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+
+                for item in page_items:
+                    results.append(item)
+
+            write_data({"type": "base_complete", "id": query_id})
+
+            print(
+                "[*] Base ADWS collection complete: "
+                f"{collected_objects} objects; collecting ranged attribute values",
+                file=sys.stderr,
+                flush=True,
             )
 
-            # A PullResponse can replace an enumeration context. Reusing the old
-            # one after that point results in InvalidEnumerationContext.
-            updated_ctx = et.find(
-                ".//wsen:PullResponse/wsen:EnumerationContext", NAMESPACES
-            )
-            if updated_ctx is not None and updated_ctx.text is not None:
-                enum_ctx = updated_ctx.text
-
-            page_results: ElementTree.Element = ElementTree.Element("wsen:Items")
-            for item in et.findall(".//wsen:Items", namespaces=NAMESPACES):
-                page_results.append(item)
-                results.append(item)
-
-            if print_incrementally:
-                self._expand_ranged_attributes(
-                    remoteName=self._fqdn,
-                    query=query,
-                    basedn=basedn,
-                    results=page_results,
-                )
-                printed_objects += self._pretty_print_response(
-                    page_results,
-                    parse_values=parse_values,
-                    show_no_objects_message=False,
-                    print_trailing_separator=False,
-                    flush_each_object=True,
-                )
-
-        if not print_incrementally:
+            # Drain the primary enumeration before performing ranged attribute
+            # retrieval or formatting. Those operations can take long enough over a
+            # proxied connection for ADWS to invalidate the LDAP connection it has
+            # reserved for the primary enumeration.
             self._expand_ranged_attributes(
                 remoteName=self._fqdn,
                 query=query,
                 basedn=basedn,
                 results=results,
             )
-        elif printed_objects:
-            print("--------------------")
-        else:
-            self._pretty_print_response(results, parse_values=parse_values)
+            print(
+                f"[*] ADWS data collection complete; printing {collected_objects} "
+                "objects",
+                file=sys.stderr,
+                flush=True,
+            )
+            if print_incrementally:
+                self._pretty_print_response(
+                    results,
+                    parse_values=parse_values,
+                    flush_each_object=True,
+                )
+            else:
+                self._pretty_print_response(results, parse_values=parse_values)
 
-        return results
+            write_data({"type": "complete", "id": query_id})
+            return results
+        except Exception as error:
+            write_data({"type": "error", "id": query_id, "message": str(error)})
+            raise
+        finally:
+            if data_file is not None:
+                data_file.close()
 
     @classmethod
     def pull_client(cls, ip: str, domain: str, username: str, auth: ADWSAuthType) -> Self:

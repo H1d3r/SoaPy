@@ -656,6 +656,11 @@ github.com/jlevere
     enum.add_argument("-dn", "--distinguishedname", action="store", metavar="distinguishedname", help="The root object's distinguishedName for the query")
     enum.add_argument("-p", "--parse", action="store_true", help="Parse attributes to human readable format")
     enum.add_argument("--bind", action="store_true", help="Authenticate and bind to ADWS without running a query")
+    enum.add_argument(
+        "--recover-data",
+        action="store_true",
+        help="Print .soapy_data in SOAPy's BOFHound-compatible LDAP format",
+    )
 
     # Writing options
     writing = parser.add_argument_group('Writing')
@@ -707,6 +712,24 @@ github.com/jlevere
         sys.exit(1)
 
     options = parser.parse_args()
+
+    if options.recover_data:
+        logger.init(options.ts)
+        try:
+            objects, pages, invalid = ADWSConnect.print_soapy_data(
+                ".soapy_data", parse_values=options.parse
+            )
+        except OSError as error:
+            logging.critical("Unable to read .soapy_data: %s", error)
+            raise SystemExit(1)
+
+        logging.info(
+            "Recovered %d objects from %d pages; ignored %d invalid records",
+            objects,
+            pages,
+            invalid,
+        )
+        return
 
     if options.kerberos and options.nthash:
         parser.error("-k/--kerberos cannot be used with -nt/--nthash")
@@ -1013,7 +1036,14 @@ github.com/jlevere
                 else:
                     attributes = None
                 
-                client.pull(current_query, options.distinguishedname, attributes, print_incrementally=True, parse_values=options.parse)
+                client.pull(
+                    current_query,
+                    options.distinguishedname,
+                    attributes,
+                    print_incrementally=True,
+                    parse_values=options.parse,
+                    data_path=".soapy_data",
+                )
 
     except Exception as e:
         logging.exception("Operation failed: %s", e)
