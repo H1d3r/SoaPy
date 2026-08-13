@@ -655,6 +655,16 @@ github.com/jlevere
     enum.add_argument("-f", "--filter", action="store", metavar="attr,attr,...", help="Attributes to select, comma separated")
     enum.add_argument("-dn", "--distinguishedname", action="store", metavar="distinguishedname", help="The root object's distinguishedName for the query")
     enum.add_argument("-p", "--parse", action="store_true", help="Parse attributes to human readable format")
+    enum.add_argument(
+        "--start-sid",
+        metavar="SID",
+        help="Inclusive starting object SID for an enumeration range",
+    )
+    enum.add_argument(
+        "--end-sid",
+        metavar="SID",
+        help="Inclusive ending object SID for an enumeration range",
+    )
     enum.add_argument("--bind", action="store_true", help="Authenticate and bind to ADWS without running a query")
     enum.add_argument(
         "--show",
@@ -712,6 +722,22 @@ github.com/jlevere
         sys.exit(1)
 
     options = parser.parse_args()
+
+    if options.start_sid and options.end_sid:
+        try:
+            start_parts = ADWSConnect._sid_parts(options.start_sid)
+            end_parts = ADWSConnect._sid_parts(options.end_sid)
+            ADWSConnect._sid_filter_value(options.start_sid)
+            ADWSConnect._sid_filter_value(options.end_sid)
+        except ValueError as error:
+            parser.error(str(error))
+        if start_parts[:-1] != end_parts[:-1]:
+            parser.error("--start-sid and --end-sid must use the same SID authority")
+        if start_parts[-1] > end_parts[-1]:
+            parser.error("--start-sid must not be greater than --end-sid")
+    else:
+        if options.start_sid or options.end_sid:
+            parser.error("--start-sid and --end-sid must be provided together")
 
     if options.show:
         logger.init(options.ts)
@@ -1036,15 +1062,46 @@ github.com/jlevere
                 else:
                     attributes = None
                 
-                client.pull(
-                    current_query,
-                    options.distinguishedname,
-                    attributes,
-                    print_incrementally=False,
-                    parse_values=options.parse,
-                    data_path=".soapy_data",
-                    print_results=False,
-                )
+                if options.start_sid is not None:
+                    sid_queries = ADWSConnect.sid_range_queries(
+                        current_query, options.start_sid, options.end_sid
+                    )
+                    sid_count = (
+                        ADWSConnect._sid_parts(options.end_sid)[-1]
+                        - ADWSConnect._sid_parts(options.start_sid)[-1]
+                        + 1
+                    )
+                    sid_query_count = (
+                        sid_count + ADWSConnect.SID_RANGE_QUERY_CHUNK_SIZE - 1
+                    ) // ADWSConnect.SID_RANGE_QUERY_CHUNK_SIZE
+                else:
+                    sid_queries = [(current_query, None, None)]
+                    sid_query_count = 1
+
+                for sid_query_index, (
+                    sid_query,
+                    chunk_start_sid,
+                    chunk_end_sid,
+                ) in enumerate(sid_queries, start=1):
+                    if chunk_start_sid is not None:
+                        print(
+                            f"[*] Collecting SID batch {sid_query_index}/"
+                            f"{sid_query_count}: {chunk_start_sid} through "
+                            f"{chunk_end_sid}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    client.pull(
+                        sid_query,
+                        options.distinguishedname,
+                        attributes,
+                        print_incrementally=False,
+                        parse_values=options.parse,
+                        data_path=".soapy_data",
+                        print_results=False,
+                        start_sid=chunk_start_sid,
+                        end_sid=chunk_end_sid,
+                    )
 
     except Exception as e:
         logging.exception("Operation failed: %s", e)

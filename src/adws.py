@@ -6,6 +6,7 @@ import socket
 import sys
 import time
 from base64 import b64decode
+from collections.abc import Iterator
 from enum import IntFlag
 from typing import Callable, Self, Type
 from uuid import UUID, uuid4
@@ -43,7 +44,6 @@ _ENUMERATION_CONTEXT_RENEW_DURATION = "PT30M"
 _ADWS_REQUEST_RETRIES = 3
 _ADWS_RETRY_BASE_DELAY_SECONDS = 1
 _ADWS_TRANSIENT_FAULTS = ("OperationTimeout", "ReservedConnectionInvalidated")
-_ADWS_ENUMERATION_RESTARTS = 3
 _ADWS_INVALID_ENUMERATION_FAULTS = (
     "NoSuchEnumCtxGuidExists",
     "ReservedConnectionInvalidated",
@@ -274,6 +274,8 @@ class NTLMAuth(ADWSAuthType):
 
 
 class ADWSConnect:
+    SID_RANGE_QUERY_CHUNK_SIZE = 256
+
     def __init__(
         self,
         fqdn: str,
@@ -400,6 +402,67 @@ class ADWSConnect:
         if distinguished_name is not None and distinguished_name.text:
             return distinguished_name.text
         return None
+
+    def _get_object_sid(self, item: ElementTree.Element) -> str | None:
+        sid_value = item.find("./addata:objectSid/ad:value", namespaces=NAMESPACES)
+        if sid_value is None or sid_value.text is None:
+            return None
+        try:
+            return LDAP_SID(data=b64decode(sid_value.text)).formatCanonical()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _sid_parts(sid: str) -> tuple[int, ...]:
+        parts = sid.split("-")
+        if len(parts) < 4 or parts[0].upper() != "S":
+            raise ValueError(f"Invalid SID: {sid}")
+        try:
+            values = tuple(int(part) for part in parts[1:])
+        except ValueError as error:
+            raise ValueError(f"Invalid SID: {sid}") from error
+        if any(value < 0 for value in values):
+            raise ValueError(f"Invalid SID: {sid}")
+        return values
+
+    @classmethod
+    def _sid_filter_value(cls, sid: str) -> str:
+        cls._sid_parts(sid)
+        encoded_sid = LDAP_SID()
+        try:
+            encoded_sid.fromCanonical(sid)
+            return "".join(f"\\{byte:02X}" for byte in encoded_sid.getData())
+        except Exception as error:
+            raise ValueError(f"Invalid SID: {sid}") from error
+
+    @classmethod
+    def sid_range_queries(
+        cls, query: str, start_sid: str, end_sid: str
+    ) -> Iterator[tuple[str, str, str]]:
+        """Split an inclusive numeric RID interval into one-page SID queries."""
+        start_parts = cls._sid_parts(start_sid)
+        end_parts = cls._sid_parts(end_sid)
+        if start_parts[:-1] != end_parts[:-1]:
+            raise ValueError("start and end SID must use the same SID authority")
+        if start_parts[-1] > end_parts[-1]:
+            raise ValueError("start SID must not be greater than end SID")
+
+        sid_prefix = "S-" + "-".join(str(value) for value in start_parts[:-1])
+        for chunk_start in range(
+            start_parts[-1], end_parts[-1] + 1, cls.SID_RANGE_QUERY_CHUNK_SIZE
+        ):
+            chunk_end = min(
+                chunk_start + cls.SID_RANGE_QUERY_CHUNK_SIZE - 1, end_parts[-1]
+            )
+            matches = "".join(
+                f"(objectSid={cls._sid_filter_value(f'{sid_prefix}-{rid}')})"
+                for rid in range(chunk_start, chunk_end + 1)
+            )
+            yield (
+                f"(&{query}(|{matches}))",
+                f"{sid_prefix}-{chunk_start}",
+                f"{sid_prefix}-{chunk_end}",
+            )
 
     def _find_attribute_element(
         self, item: ElementTree.Element, attr: str
@@ -599,7 +662,13 @@ class ADWSConnect:
         if basedn is None:
             basedn = ",".join([f"DC={i}" for i in self._domain.split(".")])
 
-        logging.info(f"Using query: {query}")
+        query_description = query
+        if len(query_description) > 1000:
+            query_description = (
+                query_description[:997]
+                + f"... [{len(query):,} characters; remainder omitted]"
+            )
+        logging.info(f"Using query: {query_description}")
         logging.info(f"Using distingushedName: {basedn}")
 
         query_vars = {
@@ -1309,6 +1378,8 @@ class ADWSConnect:
         parse_values: bool = False,
         data_path: str | None = None,
         print_results: bool = True,
+        start_sid: str | None = None,
+        end_sid: str | None = None,
     ) -> ElementTree.Element:
         """Makes an LDAP query using ADWS to the specified server
 
@@ -1320,6 +1391,8 @@ class ADWSConnect:
             parse_values (bool): When printing results parse to human readable values
             data_path (str): Append successfully collected pages to this recovery file.
             print_results (bool): Print LDAP objects after collection.
+            start_sid (str): Inclusive lower objectSid bound.
+            end_sid (str): Inclusive upper objectSid bound.
 
         Returns:
             ElementTree.Element: The soap response as xml
@@ -1356,6 +1429,8 @@ class ADWSConnect:
                 "query": query,
                 "base_dn": basedn,
                 "attributes": attributes,
+                "start_sid": start_sid,
+                "end_sid": end_sid,
             }
         )
 
@@ -1379,10 +1454,8 @@ class ADWSConnect:
             collected_objects = 0
             collected_pages = 0
             received_objects = 0
-            enumeration_restarts = 0
-            restart_catchup_target = 0
-            restart_pass_objects = 0
             seen_object_ids: set[str] = set()
+            last_collected_sid: str | None = None
             if print_results:
                 collection_message = (
                     "[*] Collecting ADWS data; results will print when collection "
@@ -1414,39 +1487,46 @@ class ADWSConnect:
                         code in str(error) for code in _ADWS_INVALID_ENUMERATION_FAULTS
                     ):
                         raise
-                    if enumeration_restarts == _ADWS_ENUMERATION_RESTARTS:
-                        raise
 
-                    enumeration_restarts += 1
-                    restart_catchup_target = collected_objects
-                    restart_pass_objects = 0
+                    next_start_sid = None
+                    if last_collected_sid is not None:
+                        sid_parts = self._sid_parts(last_collected_sid)
+                        next_start_sid = "S-" + "-".join(
+                            str(value) for value in (*sid_parts[:-1], sid_parts[-1] + 1)
+                        )
                     print(
-                        "[!] ADWS enumeration context was invalidated; restarting "
-                        f"query {enumeration_restarts}/{_ADWS_ENUMERATION_RESTARTS} "
-                        "and retaining collected objects",
+                        "[!] ADWS enumeration limit reached; the query will not be "
+                        "restarted because that would replay the same objects",
                         file=sys.stderr,
                         flush=True,
                     )
+                    resume_start_sid = start_sid or next_start_sid
+                    if start_sid is not None and end_sid is not None:
+                        print(
+                            "[!] Incomplete bounded SID query; retry only "
+                            f"--start-sid {start_sid} --end-sid {end_sid}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                    elif last_collected_sid is not None:
+                        print(
+                            f"[!] Last observed SID: {last_collected_sid}; next "
+                            f"suggested --start-sid: {next_start_sid}",
+                            file=sys.stderr,
+                            flush=True,
+                        )
                     write_data(
                         {
-                            "type": "restart",
+                            "type": "checkpoint",
                             "id": query_id,
-                            "attempt": enumeration_restarts,
+                            "last_sid": last_collected_sid,
+                            "next_start_sid": next_start_sid,
+                            "resume_start_sid": resume_start_sid,
+                            "end_sid": end_sid,
                             "message": str(error),
                         }
                     )
-                    enum_ctx = self._query_enumeration(
-                        remoteName=self._fqdn,
-                        nmf=self._nmf,
-                        query=query,
-                        basedn=basedn,
-                        attributes=attributes,
-                    )
-                    if enum_ctx is None:
-                        raise ValueError("unable to restart enumeration context")
-                    last_context_renewal = time.monotonic()
-                    more_results = True
-                    continue
+                    raise
 
                 # A PullResponse can replace an enumeration context. Reusing the old
                 # one after that point results in InvalidEnumerationContext.
@@ -1463,7 +1543,6 @@ class ADWSConnect:
                     )
                     collected_pages += len(page_items)
                     received_objects += page_objects
-                    restart_pass_objects += page_objects
                     write_pages(page_items)
 
                     new_objects = 0
@@ -1475,35 +1554,23 @@ class ADWSConnect:
                                 if identity in seen_object_ids:
                                     continue
                                 seen_object_ids.add(identity)
+                            object_sid = self._get_object_sid(item)
+                            if object_sid is not None:
+                                last_collected_sid = object_sid
                             unique_page.append(item)
                             new_objects += 1
                         if len(unique_page):
                             results.append(unique_page)
                     collected_objects += new_objects
 
-                    if restart_catchup_target:
-                        checked = min(restart_pass_objects, restart_catchup_target)
-                        percent = checked * 100 // restart_catchup_target
-                        print(
-                            "[*] ADWS restart catch-up "
-                            f"{enumeration_restarts}/{_ADWS_ENUMERATION_RESTARTS}: "
-                            f"{checked}/{restart_catchup_target} objects checked "
-                            f"({percent}%); {collected_objects} unique objects saved, "
-                            f"+{new_objects} new this page",
-                            file=sys.stderr,
-                            flush=True,
-                        )
-                        if restart_pass_objects >= restart_catchup_target:
-                            restart_catchup_target = 0
-                    else:
-                        print(
-                            "[*] Collecting ADWS data: "
-                            f"{collected_objects} unique objects saved "
-                            f"(+{new_objects} new this page; {received_objects} "
-                            f"received across {collected_pages} pages)",
-                            file=sys.stderr,
-                            flush=True,
-                        )
+                    print(
+                        "[*] Collecting ADWS data: "
+                        f"{collected_objects} unique objects saved "
+                        f"(+{new_objects} new this page; {received_objects} "
+                        f"received across {collected_pages} pages)",
+                        file=sys.stderr,
+                        flush=True,
+                    )
 
             write_data({"type": "base_complete", "id": query_id})
 
