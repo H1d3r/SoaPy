@@ -1380,6 +1380,8 @@ class ADWSConnect:
             collected_pages = 0
             received_objects = 0
             enumeration_restarts = 0
+            restart_catchup_target = 0
+            restart_pass_objects = 0
             seen_object_ids: set[str] = set()
             if print_results:
                 collection_message = (
@@ -1388,7 +1390,7 @@ class ADWSConnect:
                 )
             else:
                 collection_message = (
-                    f"[*] Collecting ADWS data into {data_path}; use --recover-data "
+                    f"[*] Collecting ADWS data into {data_path}; use --show "
                     "to print BOFHound-compatible output"
                 )
             print(collection_message, file=sys.stderr, flush=True)
@@ -1416,6 +1418,8 @@ class ADWSConnect:
                         raise
 
                     enumeration_restarts += 1
+                    restart_catchup_target = collected_objects
+                    restart_pass_objects = 0
                     print(
                         "[!] ADWS enumeration context was invalidated; restarting "
                         f"query {enumeration_restarts}/{_ADWS_ENUMERATION_RESTARTS} "
@@ -1454,10 +1458,12 @@ class ADWSConnect:
 
                 page_items = et.findall(".//wsen:Items", namespaces=NAMESPACES)
                 if page_items:
-                    collected_pages += len(page_items)
-                    received_objects += sum(
+                    page_objects = sum(
                         len(self._iter_response_objects(page)) for page in page_items
                     )
+                    collected_pages += len(page_items)
+                    received_objects += page_objects
+                    restart_pass_objects += page_objects
                     write_pages(page_items)
 
                     new_objects = 0
@@ -1475,14 +1481,29 @@ class ADWSConnect:
                             results.append(unique_page)
                     collected_objects += new_objects
 
-                    print(
-                        "[*] Collecting ADWS data: "
-                        f"{collected_objects} unique objects saved "
-                        f"({received_objects} received across "
-                        f"{collected_pages} pages)",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    if restart_catchup_target:
+                        checked = min(restart_pass_objects, restart_catchup_target)
+                        percent = checked * 100 // restart_catchup_target
+                        print(
+                            "[*] ADWS restart catch-up "
+                            f"{enumeration_restarts}/{_ADWS_ENUMERATION_RESTARTS}: "
+                            f"{checked}/{restart_catchup_target} objects checked "
+                            f"({percent}%); {collected_objects} unique objects saved, "
+                            f"+{new_objects} new this page",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        if restart_pass_objects >= restart_catchup_target:
+                            restart_catchup_target = 0
+                    else:
+                        print(
+                            "[*] Collecting ADWS data: "
+                            f"{collected_objects} unique objects saved "
+                            f"(+{new_objects} new this page; {received_objects} "
+                            f"received across {collected_pages} pages)",
+                            file=sys.stderr,
+                            flush=True,
+                        )
 
             write_data({"type": "base_complete", "id": query_id})
 
@@ -1524,7 +1545,7 @@ class ADWSConnect:
             if not print_results:
                 print(
                     f"[+] ADWS data collection complete: {collected_objects} "
-                    f"objects saved to {data_path}; run SOAPy --recover-data",
+                    f"objects saved to {data_path}; run SOAPy --show",
                     file=sys.stderr,
                     flush=True,
                 )

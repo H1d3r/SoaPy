@@ -657,7 +657,7 @@ github.com/jlevere
     enum.add_argument("-p", "--parse", action="store_true", help="Parse attributes to human readable format")
     enum.add_argument("--bind", action="store_true", help="Authenticate and bind to ADWS without running a query")
     enum.add_argument(
-        "--recover-data",
+        "--show",
         action="store_true",
         help="Print .soapy_data in SOAPy's BOFHound-compatible LDAP format",
     )
@@ -713,7 +713,7 @@ github.com/jlevere
 
     options = parser.parse_args()
 
-    if options.recover_data:
+    if options.show:
         logger.init(options.ts)
         try:
             objects, pages, invalid = ADWSConnect.print_soapy_data(
